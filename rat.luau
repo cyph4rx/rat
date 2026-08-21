@@ -31,6 +31,8 @@ local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
 local CoreGui = game:GetService("CoreGui")
 local Lighting = game:GetService("Lighting")
+local GuiService = game:GetService("GuiService")
+local VirtualUser = game:GetService("VirtualUser")
 
 PrintLoad("services ready")
 
@@ -39,7 +41,7 @@ PrintLoad("services ready")
 local UI_LIBRARY_URL = "https://raw.githubusercontent.com/topitbopit/dollarware/main/library.lua"
 local ESP_HIGHLIGHT_NAME = "RatESPHighlight"
 local ESP_INFO_NAME = "RatESPInfo"
-local ESP_UPDATE_INTERVAL = 1 / 30
+local ESP_UPDATE_INTERVAL = 1 / 60
 local ENVIRONMENT_UPDATE_INTERVAL = 0.25
 local DEFAULT_FOV = 70
 
@@ -92,8 +94,14 @@ local terrainGrassDisabled = false
 local aimbotEnabled = false
 local mouseAimbotEnabled = false
 local wallCheckEnabled = true
+local aimbotTeamCheckEnabled = false
+local triggerbotEnabled = false
 local noclipEnabled = false
 local infiniteJumpEnabled = false
+local flyEnabled = false
+local clickTeleportEnabled = false
+local antiAFKEnabled = false
+local crosshairEnabled = false
 local aimbotBindHeld = false
 local aimbotBindType = Enum.UserInputType.MouseButton2
 local aimbotBindKey = nil
@@ -101,13 +109,31 @@ local wallCheckHotkeyType = nil
 local wallCheckHotkeyKey = nil
 local desiredWalkSpeed = nil
 
-local AIMBOT_SMOOTHNESS = 0.12
-local AIMBOT_FOV_RADIUS = 150
+local aimbotSettings = {
+	Smoothness = 55,
+	FOVRadius = 150,
+	MouseDeadzone = 1.25,
+	MouseMaxStep = 90,
+	MouseRemainder = Vector2.zero,
+}
+local visualSettings = {
+	Boxes = true,
+	HealthBars = true,
+}
+local radar = {
+	Enabled = false,
+	Range = 500,
+	Dots = {},
+}
+local TRIGGERBOT_DELAY = 0.1
 local TRACER_DISTANCE = 100
 local ESP_DISTANCE_CAP = 1000
 local ESP_DISTANCE_UNCAPPED = true
+local FLY_SPEED = 60
+local CROSSHAIR_SIZE = 8
 local espColor = Color3.fromRGB(0, 255, 0)
 local espExcludedColor = Color3.fromRGB(255, 0, 0)
+local crosshairColor = Color3.fromRGB(255, 255, 255)
 local espDrawings = {}
 local targetModels = {}
 local aimbotExclusions = {}
@@ -127,12 +153,23 @@ local PLAYER_FOV = camera and camera.FieldOfView or DEFAULT_FOV
 local espUpdateAccumulator = 0
 local environmentUpdateAccumulator = 0
 local mouseAimbotWarningShown = false
+local triggerbotWarningShown = false
+local lastTriggerbotShot = 0
 local isUnloaded = false
 local wallCheckRaycastParams = RaycastParams.new()
 local groundRaycastParams = RaycastParams.new()
+local triggerbotRaycastParams = RaycastParams.new()
+local teleportRaycastParams = RaycastParams.new()
+local flyVelocity = nil
+local flyGyro = nil
+local flyHumanoid = nil
+local flyOriginalPlatformStand = nil
+local flyOriginalAutoRotate = nil
 
 wallCheckRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 groundRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+triggerbotRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+teleportRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 
 if camera then
 	originalCameraFOVs[camera] = camera.FieldOfView
@@ -180,6 +217,87 @@ aimbotFOVStroke.Color = Color3.fromRGB(255, 255, 255)
 aimbotFOVStroke.Transparency = 0.15
 aimbotFOVStroke.Thickness = 1
 aimbotFOVStroke.Parent = aimbotFOVCircle
+
+local crosshairLines = {}
+
+for index = 1, 4 do
+	local line = Instance.new("Frame")
+	line.Name = "CrosshairLine" .. index
+	line.AnchorPoint = Vector2.new(0.5, 0.5)
+	line.BackgroundColor3 = crosshairColor
+	line.BorderSizePixel = 0
+	line.Visible = false
+	line.ZIndex = 102
+	line.Parent = espOverlay
+	crosshairLines[index] = line
+end
+
+radar.Frame = Instance.new("Frame")
+radar.Frame.Name = "Radar"
+radar.Frame.AnchorPoint = Vector2.new(1, 1)
+radar.Frame.Position = UDim2.new(1, -24, 1, -24)
+radar.Frame.Size = UDim2.fromOffset(170, 170)
+radar.Frame.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+radar.Frame.BackgroundTransparency = 0.2
+radar.Frame.BorderSizePixel = 0
+radar.Frame.ClipsDescendants = true
+radar.Frame.Visible = false
+radar.Frame.ZIndex = 103
+radar.Frame.Parent = espOverlay
+
+radar.Corner = Instance.new("UICorner")
+radar.Corner.CornerRadius = UDim.new(1, 0)
+radar.Corner.Parent = radar.Frame
+
+radar.Stroke = Instance.new("UIStroke")
+radar.Stroke.Color = Color3.fromRGB(215, 215, 225)
+radar.Stroke.Transparency = 0.25
+radar.Stroke.Thickness = 1
+radar.Stroke.Parent = radar.Frame
+
+radar.Horizontal = Instance.new("Frame")
+radar.Horizontal.Name = "Horizontal"
+radar.Horizontal.AnchorPoint = Vector2.new(0.5, 0.5)
+radar.Horizontal.Position = UDim2.fromScale(0.5, 0.5)
+radar.Horizontal.Size = UDim2.new(1, -12, 0, 1)
+radar.Horizontal.BackgroundColor3 = Color3.fromRGB(150, 150, 160)
+radar.Horizontal.BackgroundTransparency = 0.6
+radar.Horizontal.BorderSizePixel = 0
+radar.Horizontal.ZIndex = 104
+radar.Horizontal.Parent = radar.Frame
+
+radar.Vertical = radar.Horizontal:Clone()
+radar.Vertical.Name = "Vertical"
+radar.Vertical.Rotation = 90
+radar.Vertical.Parent = radar.Frame
+
+radar.Center = Instance.new("Frame")
+radar.Center.Name = "LocalPlayer"
+radar.Center.AnchorPoint = Vector2.new(0.5, 0.5)
+radar.Center.Position = UDim2.fromScale(0.5, 0.5)
+radar.Center.Size = UDim2.fromOffset(7, 7)
+radar.Center.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+radar.Center.BorderSizePixel = 0
+radar.Center.ZIndex = 106
+radar.Center.Parent = radar.Frame
+
+radar.CenterCorner = Instance.new("UICorner")
+radar.CenterCorner.CornerRadius = UDim.new(1, 0)
+radar.CenterCorner.Parent = radar.Center
+
+radar.Label = Instance.new("TextLabel")
+radar.Label.Name = "Range"
+radar.Label.AnchorPoint = Vector2.new(0.5, 0)
+radar.Label.Position = UDim2.new(0.5, 0, 0, 7)
+radar.Label.Size = UDim2.new(1, -20, 0, 18)
+radar.Label.BackgroundTransparency = 1
+radar.Label.Font = Enum.Font.Code
+radar.Label.Text = "radar | 500 studs"
+radar.Label.TextColor3 = Color3.fromRGB(225, 225, 235)
+radar.Label.TextSize = 12
+radar.Label.TextStrokeTransparency = 0.65
+radar.Label.ZIndex = 106
+radar.Label.Parent = radar.Frame
 
 PrintLoad("overlay initialized")
 
@@ -372,9 +490,11 @@ local function HasWallCheck(model, targetPart)
 	end
 
 	local ignoreList = { camera }
+	local obscuringIgnoreList = { camera, model }
 
 	if localPlayer.Character then
 		table.insert(ignoreList, localPlayer.Character)
+		table.insert(obscuringIgnoreList, localPlayer.Character)
 	end
 
 	wallCheckRaycastParams.FilterDescendantsInstances = ignoreList
@@ -384,6 +504,18 @@ local function HasWallCheck(model, targetPart)
 
 	if direction.Magnitude <= 0.001 then
 		return true
+	end
+
+	local obscuringSucceeded, obscuringParts = pcall(function()
+		return camera:GetPartsObscuringTarget({ targetPart.Position }, obscuringIgnoreList)
+	end)
+
+	if obscuringSucceeded then
+		for _, part in ipairs(obscuringParts) do
+			if part:IsA("BasePart") and part.Transparency < 0.95 and part.LocalTransparencyModifier < 0.95 then
+				return false
+			end
+		end
 	end
 
 	local result = Workspace:Raycast(origin, direction, wallCheckRaycastParams)
@@ -403,6 +535,92 @@ local function GetTargets()
 	end
 
 	return targets
+end
+
+function radar.RemoveDot(model)
+	local dot = radar.Dots[model]
+
+	if dot then
+		dot:Destroy()
+		radar.Dots[model] = nil
+	end
+end
+
+function radar.Clear()
+	for model in pairs(radar.Dots) do
+		radar.RemoveDot(model)
+	end
+end
+
+function radar.SetEnabled(enabled)
+	radar.Enabled = enabled
+	radar.Frame.Visible = enabled
+
+	if enabled then
+		radar.Update()
+	else
+		radar.Clear()
+	end
+end
+
+function radar.Update()
+	if not radar.Enabled then
+		return
+	end
+
+	local localRoot = GetLocalRoot()
+
+	if not localRoot then
+		radar.Clear()
+		return
+	end
+
+	local activeModels = {}
+	local center = radar.Frame.AbsoluteSize / 2
+	local radius = math.max(1, math.min(center.X, center.Y) - 9)
+
+	for _, model in ipairs(GetTargets()) do
+		local humanoid, _, root = GetCharacterParts(model)
+
+		if humanoid and humanoid.Health > 0 and root then
+			local worldOffset = root.Position - localRoot.Position
+			local localOffset = localRoot.CFrame:VectorToObjectSpace(worldOffset)
+			local mapOffset = Vector2.new(localOffset.X, localOffset.Z)
+
+			if mapOffset.Magnitude <= radar.Range then
+				local dot = radar.Dots[model]
+
+				if not dot then
+					dot = Instance.new("Frame")
+					dot.Name = "Target"
+					dot.AnchorPoint = Vector2.new(0.5, 0.5)
+					dot.Size = UDim2.fromOffset(7, 7)
+					dot.BorderSizePixel = 0
+					dot.ZIndex = 107
+					dot.Parent = radar.Frame
+
+					local corner = Instance.new("UICorner")
+					corner.CornerRadius = UDim.new(1, 0)
+					corner.Parent = dot
+					radar.Dots[model] = dot
+				end
+
+				local scaledOffset = mapOffset * (radius / math.max(radar.Range, 1))
+				dot.Position = UDim2.fromOffset(center.X + scaledOffset.X, center.Y + scaledOffset.Y)
+				dot.BackgroundColor3 = GetESPColor(model)
+				dot.Visible = true
+				activeModels[model] = true
+			end
+		end
+	end
+
+	for model in pairs(radar.Dots) do
+		if not activeModels[model] then
+			radar.RemoveDot(model)
+		end
+	end
+
+	radar.Label.Text = "radar | " .. math.floor(radar.Range) .. " studs"
 end
 
 -- ESP ------------------------------------------------------------------------
@@ -445,6 +663,14 @@ local function GetDrawing(model)
 	espDrawings[model] = {
 		container = container,
 		tracer = MakeLine(container, "Tracer"),
+		box = {
+			MakeLine(container, "BoxTop"),
+			MakeLine(container, "BoxRight"),
+			MakeLine(container, "BoxBottom"),
+			MakeLine(container, "BoxLeft"),
+		},
+		healthBackground = MakeLine(container, "HealthBackground"),
+		healthFill = MakeLine(container, "HealthFill"),
 		bones = {},
 	}
 
@@ -509,6 +735,12 @@ local r6BonePairs = {
 
 local function HideDrawing(drawing)
 	drawing.tracer.Visible = false
+	drawing.healthBackground.Visible = false
+	drawing.healthFill.Visible = false
+
+	for _, line in ipairs(drawing.box) do
+		line.Visible = false
+	end
 
 	for _, line in pairs(drawing.bones) do
 		line.Visible = false
@@ -527,6 +759,64 @@ local function UpdateESPDrawings(model)
 	end
 
 	local color = GetESPColor(model)
+	local boxCFrame, boxSize = model:GetBoundingBox()
+	local minimum = Vector2.new(math.huge, math.huge)
+	local maximum = Vector2.new(-math.huge, -math.huge)
+	local projectedCornerCount = 0
+
+	for x = -1, 1, 2 do
+		for y = -1, 1, 2 do
+			for z = -1, 1, 2 do
+				local offset = Vector3.new(boxSize.X * x, boxSize.Y * y, boxSize.Z * z) / 2
+				local worldPosition = boxCFrame:PointToWorldSpace(offset)
+				local point = camera:WorldToViewportPoint(worldPosition)
+
+				if point.Z > 0 then
+					minimum = Vector2.new(math.min(minimum.X, point.X), math.min(minimum.Y, point.Y))
+					maximum = Vector2.new(math.max(maximum.X, point.X), math.max(maximum.Y, point.Y))
+					projectedCornerCount += 1
+				end
+			end
+		end
+	end
+
+	if projectedCornerCount > 0 and maximum.X > minimum.X and maximum.Y > minimum.Y then
+		local topLeft = Vector2.new(minimum.X, minimum.Y)
+		local topRight = Vector2.new(maximum.X, minimum.Y)
+		local bottomRight = Vector2.new(maximum.X, maximum.Y)
+		local bottomLeft = Vector2.new(minimum.X, maximum.Y)
+
+		if visualSettings.Boxes then
+			DrawLine(drawing.box[1], topLeft, topRight, color, 1)
+			DrawLine(drawing.box[2], topRight, bottomRight, color, 1)
+			DrawLine(drawing.box[3], bottomRight, bottomLeft, color, 1)
+			DrawLine(drawing.box[4], bottomLeft, topLeft, color, 1)
+		else
+			for _, line in ipairs(drawing.box) do
+				line.Visible = false
+			end
+		end
+
+		if visualSettings.HealthBars then
+			local healthRatio = math.clamp(humanoid.Health / math.max(humanoid.MaxHealth, 1), 0, 1)
+			local barX = minimum.X - 6
+			local barBottom = Vector2.new(barX, maximum.Y)
+			local barTop = Vector2.new(barX, minimum.Y)
+			local fillTop = Vector2.new(barX, maximum.Y - ((maximum.Y - minimum.Y) * healthRatio))
+			DrawLine(drawing.healthBackground, barBottom, barTop, Color3.fromRGB(15, 15, 15), 5)
+			DrawLine(drawing.healthFill, barBottom, fillTop, Color3.fromHSV(healthRatio * 0.33, 1, 1), 3)
+		else
+			drawing.healthBackground.Visible = false
+			drawing.healthFill.Visible = false
+		end
+	else
+		for _, line in ipairs(drawing.box) do
+			line.Visible = false
+		end
+
+		drawing.healthBackground.Visible = false
+		drawing.healthFill.Visible = false
+	end
 
 	if espTracersEnabled and localRoot and (localRoot.Position - root.Position).Magnitude <= TRACER_DISTANCE then
 		DrawLine(drawing.tracer, Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y), rootPoint, color, 1)
@@ -583,6 +873,7 @@ local function UpdateESPLabel(model)
 	local billboard = model:FindFirstChild(ESP_INFO_NAME)
 	local label = billboard and billboard:FindFirstChild("Info")
 	local humanoid, _, root = GetCharacterParts(model)
+	local targetPlayer = Players:GetPlayerFromCharacter(model)
 	local localRoot = GetLocalRoot()
 	local showLabel = espNameEnabled or espInfoEnabled
 
@@ -604,7 +895,15 @@ local function UpdateESPLabel(model)
 	label.TextColor3 = GetESPColor(model)
 
 	if espNameEnabled then
-		table.insert(lines, model.Name)
+		local displayName = model.Name
+
+		if targetPlayer then
+			displayName = targetPlayer.DisplayName ~= targetPlayer.Name
+					and (targetPlayer.DisplayName .. " (@" .. targetPlayer.Name .. ")")
+				or ("@" .. targetPlayer.Name)
+		end
+
+		table.insert(lines, displayName)
 	end
 
 	if espInfoEnabled then
@@ -630,8 +929,10 @@ local function CreateESP(model)
 
 	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	highlight.Enabled = true
-	highlight.FillTransparency = 1
+	highlight.FillColor = GetESPColor(model)
+	highlight.FillTransparency = 0.88
 	highlight.OutlineColor = GetESPColor(model)
+	highlight.OutlineTransparency = 0
 
 	if (espNameEnabled or espInfoEnabled) and not model:FindFirstChild(ESP_INFO_NAME) then
 		local billboard = Instance.new("BillboardGui")
@@ -756,7 +1057,10 @@ local function CaptureLightingSettings()
 		Ambient = Lighting.Ambient,
 		Brightness = Lighting.Brightness,
 		ClockTime = Lighting.ClockTime,
+		ColorShift_Bottom = Lighting.ColorShift_Bottom,
+		ColorShift_Top = Lighting.ColorShift_Top,
 		ExposureCompensation = Lighting.ExposureCompensation,
+		FogColor = Lighting.FogColor,
 		FogEnd = Lighting.FogEnd,
 		FogStart = Lighting.FogStart,
 		GlobalShadows = Lighting.GlobalShadows,
@@ -789,12 +1093,15 @@ local function MaintainFullbright()
 
 	CaptureLightingSettings()
 
-	Lighting.Ambient = Color3.fromRGB(170, 170, 170)
+	Lighting.Ambient = Color3.fromRGB(190, 190, 190)
 	Lighting.Brightness = 2
 	Lighting.ExposureCompensation = 0
-	Lighting.OutdoorAmbient = Color3.fromRGB(170, 170, 170)
+	Lighting.OutdoorAmbient = Color3.fromRGB(190, 190, 190)
 
 	Lighting.ClockTime = 14
+	Lighting.ColorShift_Bottom = Color3.new(0, 0, 0)
+	Lighting.ColorShift_Top = Color3.new(0, 0, 0)
+	Lighting.FogColor = Color3.new(1, 1, 1)
 	Lighting.FogEnd = 1000000
 	Lighting.FogStart = 0
 	Lighting.GlobalShadows = false
@@ -947,6 +1254,161 @@ end
 
 local function SetInfiniteJump(enabled)
 	infiniteJumpEnabled = enabled
+end
+
+local function DestroyFlyMovers()
+	if flyVelocity then
+		flyVelocity:Destroy()
+		flyVelocity = nil
+	end
+
+	if flyGyro then
+		flyGyro:Destroy()
+		flyGyro = nil
+	end
+
+	if flyHumanoid and flyHumanoid.Parent then
+		if flyOriginalPlatformStand ~= nil then
+			flyHumanoid.PlatformStand = flyOriginalPlatformStand
+		end
+
+		if flyOriginalAutoRotate ~= nil then
+			flyHumanoid.AutoRotate = flyOriginalAutoRotate
+		end
+	end
+
+	flyHumanoid = nil
+	flyOriginalPlatformStand = nil
+	flyOriginalAutoRotate = nil
+end
+
+local function SetFly(enabled)
+	flyEnabled = enabled
+
+	if not flyEnabled then
+		DestroyFlyMovers()
+	end
+end
+
+local function UpdateFly()
+	if not flyEnabled then
+		return
+	end
+
+	camera = Workspace.CurrentCamera
+
+	local character = localPlayer.Character
+	local humanoid, _head, root
+
+	if character then
+		humanoid, _head, root = GetCharacterParts(character)
+	end
+
+	if not camera or not humanoid or humanoid.Health <= 0 or not root then
+		DestroyFlyMovers()
+		return
+	end
+
+	if
+		flyHumanoid ~= humanoid
+		or not flyVelocity
+		or flyVelocity.Parent ~= root
+		or not flyGyro
+		or flyGyro.Parent ~= root
+	then
+		DestroyFlyMovers()
+
+		flyHumanoid = humanoid
+		flyOriginalPlatformStand = humanoid.PlatformStand
+		flyOriginalAutoRotate = humanoid.AutoRotate
+
+		flyVelocity = Instance.new("BodyVelocity")
+		flyVelocity.Name = "RatFlyVelocity"
+		flyVelocity.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+		flyVelocity.P = 25000
+		flyVelocity.Velocity = Vector3.zero
+		flyVelocity.Parent = root
+
+		flyGyro = Instance.new("BodyGyro")
+		flyGyro.Name = "RatFlyGyro"
+		flyGyro.D = 500
+		flyGyro.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+		flyGyro.P = 25000
+		flyGyro.Parent = root
+	end
+
+	humanoid.PlatformStand = true
+	humanoid.AutoRotate = false
+
+	local direction = Vector3.zero
+	local cameraFrame = camera.CFrame
+
+	if not UserInputService:GetFocusedTextBox() then
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+			direction += cameraFrame.LookVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+			direction -= cameraFrame.LookVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+			direction += cameraFrame.RightVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+			direction -= cameraFrame.RightVector
+		end
+
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+			direction += Vector3.yAxis
+		end
+
+		if
+			UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+			or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+		then
+			direction -= Vector3.yAxis
+		end
+	end
+
+	flyVelocity.Velocity = direction.Magnitude > 0 and direction.Unit * FLY_SPEED or Vector3.zero
+	flyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + cameraFrame.LookVector)
+end
+
+local function TeleportToCursor()
+	camera = Workspace.CurrentCamera
+
+	local character = localPlayer.Character
+	local humanoid, _head, root
+
+	if character then
+		humanoid, _head, root = GetCharacterParts(character)
+	end
+
+	if not camera or not character or not humanoid or humanoid.Health <= 0 or not root then
+		return
+	end
+
+	local mousePosition = UserInputService:GetMouseLocation()
+	local topLeftInset = GuiService:GetGuiInset()
+	local viewportPosition = mousePosition - topLeftInset
+	local ray = camera:ViewportPointToRay(viewportPosition.X, viewportPosition.Y)
+
+	teleportRaycastParams.FilterDescendantsInstances = { character, camera }
+
+	local result = Workspace:Raycast(ray.Origin, ray.Direction * 5000, teleportRaycastParams)
+
+	if not result then
+		return
+	end
+
+	local heightOffset = humanoid.HipHeight + (root.Size.Y / 2) + 0.5
+	local targetPosition = result.Position + result.Normal * heightOffset
+
+	root.CFrame = CFrame.new(targetPosition) * root.CFrame.Rotation
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
 end
 
 local function ApplyWallNoclip(character)
@@ -1156,6 +1618,8 @@ local function SetAimbotBindFromText(text)
 	aimbotBindType = inputType
 	aimbotBindKey = keyCode
 	aimbotBindHeld = false
+	aimbotSettings.LockedModel = nil
+	aimbotSettings.MouseRemainder = Vector2.zero
 
 	if aimbotBindLabel then
 		aimbotBindLabel:setText(
@@ -1189,6 +1653,8 @@ end
 
 local function SetWallCheck(enabled, syncToggle)
 	wallCheckEnabled = enabled
+	aimbotSettings.LockedModel = nil
+	aimbotSettings.MouseRemainder = Vector2.zero
 
 	if
 		syncToggle
@@ -1235,30 +1701,92 @@ local function IsWallCheckHotkey(input)
 	return input.UserInputType == wallCheckHotkeyType
 end
 
-local function UpdateAimbotFOVCircle()
+local function GetAimbotScreenOrigin()
 	camera = Workspace.CurrentCamera
 
 	if not camera then
+		return nil, Vector2.zero
+	end
+
+	local topLeftInset = Vector2.zero
+	local insetSucceeded, inset = pcall(function()
+		return GuiService:GetGuiInset()
+	end)
+
+	if insetSucceeded then
+		topLeftInset = inset
+	end
+
+	if mouseAimbotEnabled and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+		return UserInputService:GetMouseLocation() - topLeftInset, topLeftInset
+	end
+
+	return camera.ViewportSize / 2, topLeftInset
+end
+
+local function UpdateAimbotFOVCircle()
+	local aimOrigin = GetAimbotScreenOrigin()
+
+	if not aimOrigin then
 		aimbotFOVCircle.Visible = false
 		return
 	end
 
-	local diameter = AIMBOT_FOV_RADIUS * 2
-	local viewportCenter = camera.ViewportSize / 2
+	local diameter = aimbotSettings.FOVRadius * 2
 
-	aimbotFOVCircle.Position = UDim2.fromOffset(viewportCenter.X, viewportCenter.Y)
+	aimbotFOVCircle.Position = UDim2.fromOffset(aimOrigin.X, aimOrigin.Y)
 	aimbotFOVCircle.Size = UDim2.fromOffset(diameter, diameter)
 	aimbotFOVCircle.Visible = aimbotEnabled
 end
 
-local function IsScreenPointInAimbotFOV(screenPosition)
+local function UpdateCrosshair()
 	camera = Workspace.CurrentCamera
 
-	if not camera then
+	if not camera or not crosshairEnabled then
+		for _, line in ipairs(crosshairLines) do
+			line.Visible = false
+		end
+
+		return
+	end
+
+	local center = camera.ViewportSize / 2
+	local length = CROSSHAIR_SIZE
+	local gap = 4
+	local thickness = 2
+
+	for _, line in ipairs(crosshairLines) do
+		line.BackgroundColor3 = crosshairColor
+		line.Visible = true
+	end
+
+	crosshairLines[1].Position = UDim2.fromOffset(center.X - gap - (length / 2), center.Y)
+	crosshairLines[1].Size = UDim2.fromOffset(length, thickness)
+	crosshairLines[2].Position = UDim2.fromOffset(center.X + gap + (length / 2), center.Y)
+	crosshairLines[2].Size = UDim2.fromOffset(length, thickness)
+	crosshairLines[3].Position = UDim2.fromOffset(center.X, center.Y - gap - (length / 2))
+	crosshairLines[3].Size = UDim2.fromOffset(thickness, length)
+	crosshairLines[4].Position = UDim2.fromOffset(center.X, center.Y + gap + (length / 2))
+	crosshairLines[4].Size = UDim2.fromOffset(thickness, length)
+end
+
+local function IsScreenPointInAimbotFOV(screenPosition)
+	local aimOrigin = GetAimbotScreenOrigin()
+
+	if not aimOrigin then
 		return false
 	end
 
-	return (screenPosition - (camera.ViewportSize / 2)).Magnitude <= AIMBOT_FOV_RADIUS
+	return (screenPosition - aimOrigin).Magnitude <= aimbotSettings.FOVRadius
+end
+
+local function IsSameTeam(model)
+	if not aimbotTeamCheckEnabled or not localPlayer.Team then
+		return false
+	end
+
+	local player = Players:GetPlayerFromCharacter(model)
+	return player ~= nil and player.Team == localPlayer.Team
 end
 
 local function IsValidAimbotTarget(model)
@@ -1266,7 +1794,19 @@ local function IsValidAimbotTarget(model)
 		return false
 	end
 
+	if not IsWithinESPDistance(model) then
+		return false
+	end
+
+	if espEnabled and not model:FindFirstChild(ESP_HIGHLIGHT_NAME) then
+		return false
+	end
+
 	if IsAimbotExcluded(model) then
+		return false
+	end
+
+	if IsSameTeam(model) then
 		return false
 	end
 
@@ -1281,9 +1821,15 @@ local function GetClosestHeadToCrosshair()
 		return nil
 	end
 
-	local viewportCenter = camera.ViewportSize / 2
+	local aimOrigin = GetAimbotScreenOrigin()
+
+	if not aimOrigin then
+		return nil
+	end
+
 	local closestHead = nil
 	local closestScreenPosition = nil
+	local closestModel = nil
 	local closestDistance = math.huge
 
 	for _, model in ipairs(GetTargets()) do
@@ -1293,18 +1839,52 @@ local function GetClosestHeadToCrosshair()
 
 			if onScreen and screenPoint.Z > 0 then
 				local screenPosition = Vector2.new(screenPoint.X, screenPoint.Y)
-				local distance = (screenPosition - viewportCenter).Magnitude
+				local distance = (screenPosition - aimOrigin).Magnitude
 
 				if IsScreenPointInAimbotFOV(screenPosition) and distance < closestDistance then
 					closestDistance = distance
 					closestHead = head
 					closestScreenPosition = screenPosition
+					closestModel = model
 				end
 			end
 		end
 	end
 
-	return closestHead, closestScreenPosition
+	return closestHead, closestScreenPosition, closestModel
+end
+
+local function GetLockedAimbotTarget()
+	camera = Workspace.CurrentCamera
+
+	if not camera then
+		aimbotSettings.LockedModel = nil
+		aimbotSettings.MouseRemainder = Vector2.zero
+		return nil
+	end
+
+	if aimbotSettings.LockedModel and IsValidAimbotTarget(aimbotSettings.LockedModel) then
+		local head = aimbotSettings.LockedModel:FindFirstChild("Head")
+
+		if head then
+			local point, onScreen = camera:WorldToViewportPoint(head.Position)
+
+			if onScreen and point.Z > 0 then
+				local screenPosition = Vector2.new(point.X, point.Y)
+
+				if IsScreenPointInAimbotFOV(screenPosition) then
+					return head, screenPosition
+				end
+			end
+		end
+	end
+
+	aimbotSettings.LockedModel = nil
+	aimbotSettings.MouseRemainder = Vector2.zero
+
+	local head, screenPosition, model = GetClosestHeadToCrosshair()
+	aimbotSettings.LockedModel = model
+	return head, screenPosition
 end
 
 local function MoveMouseTowardScreenPosition(screenPosition)
@@ -1314,22 +1894,44 @@ local function MoveMouseTowardScreenPosition(screenPosition)
 		return false
 	end
 
-	local viewportCenter = camera.ViewportSize / 2
-	local delta = (screenPosition - viewportCenter) * AIMBOT_SMOOTHNESS
+	local aimOrigin, topLeftInset = GetAimbotScreenOrigin()
+
+	if not aimOrigin then
+		return false
+	end
+
+	local rawDelta = screenPosition - aimOrigin
+
+	if rawDelta.Magnitude <= aimbotSettings.MouseDeadzone then
+		aimbotSettings.MouseRemainder = Vector2.zero
+		return true
+	end
+
+	local response = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	local delta = (rawDelta * response) + aimbotSettings.MouseRemainder
+
+	if delta.Magnitude > aimbotSettings.MouseMaxStep then
+		delta = delta.Unit * aimbotSettings.MouseMaxStep
+		aimbotSettings.MouseRemainder = Vector2.zero
+	end
+
+	local deltaX = delta.X >= 0 and math.floor(delta.X) or math.ceil(delta.X)
+	local deltaY = delta.Y >= 0 and math.floor(delta.Y) or math.ceil(delta.Y)
+	aimbotSettings.MouseRemainder = delta - Vector2.new(deltaX, deltaY)
 
 	if typeof(mousemoverel) == "function" then
-		return pcall(mousemoverel, delta.X, delta.Y)
+		return pcall(mousemoverel, deltaX, deltaY)
 	end
 
 	if typeof(mousemoveabs) == "function" then
-		local nextPosition = viewportCenter + delta
+		local nextPosition = aimOrigin + Vector2.new(deltaX, deltaY) + topLeftInset
 		return pcall(mousemoveabs, nextPosition.X, nextPosition.Y)
 	end
 
 	return false
 end
 
-local function AimAtHead(head, screenPosition)
+local function AimAtHead(head)
 	camera = Workspace.CurrentCamera
 
 	if not camera or not head or not head:IsDescendantOf(Workspace) then
@@ -1337,7 +1939,13 @@ local function AimAtHead(head, screenPosition)
 	end
 
 	if mouseAimbotEnabled then
-		local movedMouse = MoveMouseTowardScreenPosition(screenPosition)
+		local point, onScreen = camera:WorldToViewportPoint(head.Position)
+
+		if not onScreen or point.Z <= 0 then
+			return
+		end
+
+		local movedMouse = MoveMouseTowardScreenPosition(Vector2.new(point.X, point.Y))
 
 		if not movedMouse and not mouseAimbotWarningShown then
 			mouseAimbotWarningShown = true
@@ -1349,7 +1957,70 @@ local function AimAtHead(head, screenPosition)
 
 	local position = camera.CFrame.Position
 	local targetCFrame = CFrame.lookAt(position, head.Position)
-	camera.CFrame = camera.CFrame:Lerp(targetCFrame, AIMBOT_SMOOTHNESS)
+	camera.CFrame = camera.CFrame:Lerp(targetCFrame, math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1))
+end
+
+local function ClickMouseOnce()
+	if typeof(mouse1click) == "function" then
+		return pcall(mouse1click)
+	end
+
+	if typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
+		local pressed = pcall(mouse1press)
+
+		if pressed then
+			task.delay(0.02, function()
+				pcall(mouse1release)
+			end)
+		end
+
+		return pressed
+	end
+
+	return false
+end
+
+local function UpdateTriggerbot()
+	if not triggerbotEnabled or UserInputService:GetFocusedTextBox() then
+		return
+	end
+
+	local now = os.clock()
+
+	if now - lastTriggerbotShot < TRIGGERBOT_DELAY then
+		return
+	end
+
+	camera = Workspace.CurrentCamera
+
+	if not camera then
+		return
+	end
+
+	local character = localPlayer.Character
+	local center = camera.ViewportSize / 2
+	local ray = camera:ViewportPointToRay(center.X, center.Y)
+	local ignoreList = { camera }
+
+	if character then
+		table.insert(ignoreList, character)
+	end
+
+	triggerbotRaycastParams.FilterDescendantsInstances = ignoreList
+
+	local result = Workspace:Raycast(ray.Origin, ray.Direction * 10000, triggerbotRaycastParams)
+	local model = result and GetCharacterFromPart(result.Instance)
+
+	if not model or not IsValidAimbotTarget(model) then
+		return
+	end
+
+	lastTriggerbotShot = now
+
+	if not ClickMouseOnce() and not triggerbotWarningShown then
+		triggerbotWarningShown = true
+		Notify("Triggerbot", "Mouse clicking is not supported in this executor")
+	end
 end
 
 local function WatchPlayer(player)
@@ -1363,6 +2034,7 @@ local function WatchPlayer(player)
 
 		if player == localPlayer then
 			RestoreNoclipCollisions()
+			DestroyFlyMovers()
 
 			if desiredWalkSpeed and humanoid then
 				SetWalkSpeed(desiredWalkSpeed)
@@ -1389,13 +2061,21 @@ local function Unload(skipUIDestroy)
 	aimbotEnabled = false
 	mouseAimbotEnabled = false
 	aimbotBindHeld = false
+	aimbotSettings.LockedModel = nil
+	aimbotSettings.MouseRemainder = Vector2.zero
+	triggerbotEnabled = false
+	clickTeleportEnabled = false
+	antiAFKEnabled = false
+	crosshairEnabled = false
 
 	SetFullbright(false)
 	SetTerrainGrassDisabled(false)
 	SetNoclip(false)
 	SetInfiniteJump(false)
+	SetFly(false)
 	RestorePlayerSettings()
 	SetESP(false)
+	radar.SetEnabled(false)
 	DisconnectAllConnections()
 
 	table.clear(targetModels)
@@ -1430,370 +2110,567 @@ PrintLoad("feature systems ready")
 
 -- Interface ------------------------------------------------------------------
 
-local window = ui.newWindow({
-	text = "rat.lua",
-	resize = true,
-	size = Vector2.new(560, 380),
-	position = nil,
-})
+local function BuildInterface()
+	local window = ui.newWindow({
+		text = "rat.lua",
+		resize = true,
+		size = Vector2.new(560, 380),
+		position = nil,
+	})
 
-local combatMenu = window:addMenu({
-	text = "Combat",
-})
+	local combatMenu = window:addMenu({
+		text = "Combat",
+	})
 
-local visualsMenu = window:addMenu({
-	text = "Visuals",
-})
+	local visualsMenu = window:addMenu({
+		text = "Visuals",
+	})
 
-local playerMenu = window:addMenu({
-	text = "Player",
-})
+	local playerMenu = window:addMenu({
+		text = "Player",
+	})
 
-local settingsMenu = window:addMenu({
-	text = "Settings",
-})
+	local settingsMenu = window:addMenu({
+		text = "Settings",
+	})
 
-local aimbotSection = combatMenu:addSection({
-	text = "Aimbot",
-	side = "left",
-	showMinButton = false,
-})
-
-aimbotBindLabel = aimbotSection:addLabel({
-	text = "Hold " .. GetBindName() .. " while enabled",
-})
-
-aimbotSection
-	:addToggle({
+	local aimbotSection = combatMenu:addSection({
 		text = "Aimbot",
-		state = false,
+		side = "left",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		aimbotEnabled = newState
-	end)
 
-wallCheckToggle = aimbotSection:addToggle({
-	text = "Wallcheck",
-	state = true,
-})
-
-wallCheckToggle:bindToEvent("onToggle", function(newState)
-	SetWallCheck(newState, false)
-end)
-
-aimbotSection
-	:addToggle({
-		text = "Mouse Aimbot",
-		state = false,
+	aimbotBindLabel = aimbotSection:addLabel({
+		text = "Hold " .. GetBindName() .. " while enabled",
 	})
-	:bindToEvent("onToggle", function(newState)
-		mouseAimbotEnabled = newState
-	end)
 
-aimbotSection
-	:addSlider({
-		text = "Smoothness",
-		min = 0.01,
-		max = 1,
-		step = 0.01,
-		value = AIMBOT_SMOOTHNESS,
-	}, function(newValue)
-		AIMBOT_SMOOTHNESS = tonumber(newValue) or AIMBOT_SMOOTHNESS
-	end)
-	:setTooltip("Lower is smoother. Higher is snappier.")
+	aimbotSection
+		:addToggle({
+			text = "Aimbot",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			aimbotEnabled = newState
 
-aimbotSection
-	:addSlider({
-		text = "FOV Radius",
-		min = 25,
-		max = 500,
-		step = 5,
-		value = AIMBOT_FOV_RADIUS,
-	}, function(newValue)
-		AIMBOT_FOV_RADIUS = tonumber(newValue) or AIMBOT_FOV_RADIUS
-		UpdateAimbotFOVCircle()
-	end)
-	:setTooltip("Targets must be inside the circle to lock.")
-
-aimbotSection
-	:addTextbox({
-		text = "Hold Bind",
-	})
-	:bindToEvent("onFocusLost", function(text)
-		SetAimbotBindFromText(text)
-	end)
-
-aimbotSection
-	:addTextbox({
-		text = "Wallcheck Hotkey",
-	})
-	:bindToEvent("onFocusLost", function(text)
-		SetWallCheckHotkeyFromText(text)
-	end)
-
-local exclusionsSection = combatMenu:addSection({
-	text = "Exclusions",
-	side = "right",
-	showMinButton = false,
-})
-
-exclusionsSection
-	:addTextbox({
-		text = "Excluded Players",
-	})
-	:bindToEvent("onFocusLost", function(text)
-		SetAimbotExclusionsFromText(text)
-	end)
-
-exclusionsLabel = exclusionsSection:addLabel({
-	text = "Excluded: none",
-	dim = true,
-})
-
-exclusionsSection:addButton({
-	text = "Clear Exclusions",
-	style = "small",
-}, function()
-	ClearAimbotExclusions()
-end)
-
-local espSection = visualsMenu:addSection({
-	text = "ESP",
-	side = "left",
-	showMinButton = false,
-})
-
-espSection
-	:addToggle({
-		text = "ESP",
-		state = false,
-	})
-	:bindToEvent("onToggle", function(newState)
-		SetESP(newState)
-	end)
-
-espSection
-	:addToggle({
-		text = "Name",
-		state = true,
-	})
-	:bindToEvent("onToggle", function(newState)
-		espNameEnabled = newState
-
-		if espEnabled then
-			RefreshESP()
-		end
-	end)
-
-espSection
-	:addToggle({
-		text = "Info",
-		state = true,
-	})
-	:bindToEvent("onToggle", function(newState)
-		espInfoEnabled = newState
-
-		if espEnabled then
-			RefreshESP()
-		end
-	end)
-
-espSection
-	:addToggle({
-		text = "Tracers",
-		state = true,
-	})
-	:bindToEvent("onToggle", function(newState)
-		espTracersEnabled = newState
-
-		if not espTracersEnabled then
-			for _, drawing in pairs(espDrawings) do
-				drawing.tracer.Visible = false
+			if not aimbotEnabled then
+				aimbotSettings.LockedModel = nil
+				aimbotSettings.MouseRemainder = Vector2.zero
+				aimbotBindHeld = false
 			end
-		end
-	end)
+		end)
 
-espSection
-	:addToggle({
-		text = "Bones",
+	wallCheckToggle = aimbotSection:addToggle({
+		text = "Wallcheck",
 		state = true,
 	})
-	:bindToEvent("onToggle", function(newState)
-		espBonesEnabled = newState
 
-		if not espBonesEnabled then
-			for _, drawing in pairs(espDrawings) do
-				for _, line in pairs(drawing.bones) do
-					line.Visible = false
+	wallCheckToggle:bindToEvent("onToggle", function(newState)
+		SetWallCheck(newState, false)
+	end)
+
+	aimbotSection
+		:addToggle({
+			text = "Team Check",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			aimbotTeamCheckEnabled = newState
+		end)
+		:setTooltip("Aimbot and triggerbot ignore players on your team.")
+
+	aimbotSection
+		:addToggle({
+			text = "Mouse Aimbot",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			mouseAimbotEnabled = newState
+			aimbotSettings.LockedModel = nil
+			aimbotSettings.MouseRemainder = Vector2.zero
+		end)
+		:setTooltip("Uses center aim while the mouse is locked and real cursor position otherwise.")
+
+	aimbotSection
+		:addSlider({
+			text = "Smoothness",
+			min = 1,
+			max = 100,
+			step = 1,
+			value = aimbotSettings.Smoothness,
+		}, function(newValue)
+			aimbotSettings.Smoothness = math.clamp(tonumber(newValue) or aimbotSettings.Smoothness, 1, 100)
+			aimbotSettings.MouseRemainder = Vector2.zero
+		end)
+		:setTooltip("Percentage response. 55 is balanced; lower is smoother and higher is faster.")
+
+	aimbotSection
+		:addSlider({
+			text = "FOV Radius",
+			min = 25,
+			max = 500,
+			step = 5,
+			value = aimbotSettings.FOVRadius,
+		}, function(newValue)
+			aimbotSettings.FOVRadius = tonumber(newValue) or aimbotSettings.FOVRadius
+			UpdateAimbotFOVCircle()
+		end)
+		:setTooltip("Targets must be inside the circle, inside ESP distance, and visible when wallcheck is on.")
+
+	aimbotSection
+		:addTextbox({
+			text = "Hold Bind",
+		})
+		:bindToEvent("onFocusLost", function(text)
+			SetAimbotBindFromText(text)
+		end)
+
+	aimbotSection
+		:addTextbox({
+			text = "Wallcheck Hotkey",
+		})
+		:bindToEvent("onFocusLost", function(text)
+			SetWallCheckHotkeyFromText(text)
+		end)
+
+	local exclusionsSection = combatMenu:addSection({
+		text = "Exclusions",
+		side = "right",
+		showMinButton = false,
+	})
+
+	exclusionsSection
+		:addTextbox({
+			text = "Excluded Players",
+		})
+		:bindToEvent("onFocusLost", function(text)
+			SetAimbotExclusionsFromText(text)
+		end)
+
+	exclusionsLabel = exclusionsSection:addLabel({
+		text = "Excluded: none",
+		dim = true,
+	})
+
+	exclusionsSection:addButton({
+		text = "Clear Exclusions",
+		style = "small",
+	}, function()
+		ClearAimbotExclusions()
+	end)
+
+	local triggerbotSection = combatMenu:addSection({
+		text = "Triggerbot",
+		side = "right",
+		showMinButton = false,
+	})
+
+	triggerbotSection
+		:addToggle({
+			text = "Triggerbot",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			triggerbotEnabled = newState
+			lastTriggerbotShot = 0
+		end)
+
+	triggerbotSection
+		:addSlider({
+			text = "Shot Delay",
+			min = 0.02,
+			max = 0.5,
+			step = 0.01,
+			value = TRIGGERBOT_DELAY,
+		}, function(newValue)
+			TRIGGERBOT_DELAY = tonumber(newValue) or TRIGGERBOT_DELAY
+		end)
+		:setTooltip("Delay between automatic shots while an eligible target is under the crosshair.")
+
+	local espSection = visualsMenu:addSection({
+		text = "ESP",
+		side = "left",
+		showMinButton = false,
+	})
+
+	espSection
+		:addToggle({
+			text = "ESP",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetESP(newState)
+		end)
+
+	espSection
+		:addToggle({
+			text = "Name",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			espNameEnabled = newState
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+
+	espSection
+		:addToggle({
+			text = "Info",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			espInfoEnabled = newState
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+
+	espSection
+		:addToggle({
+			text = "Boxes",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			visualSettings.Boxes = newState
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+
+	espSection
+		:addToggle({
+			text = "Health Bars",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			visualSettings.HealthBars = newState
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+
+	espSection
+		:addToggle({
+			text = "Tracers",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			espTracersEnabled = newState
+
+			if not espTracersEnabled then
+				for _, drawing in pairs(espDrawings) do
+					drawing.tracer.Visible = false
 				end
 			end
-		end
-	end)
+		end)
 
-local espSettingsSection = visualsMenu:addSection({
-	text = "ESP Settings",
-	side = "right",
-	showMinButton = false,
-})
+	espSection
+		:addToggle({
+			text = "Bones",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			espBonesEnabled = newState
 
-espSettingsSection
-	:addToggle({
-		text = "Team Color",
-		state = true,
+			if not espBonesEnabled then
+				for _, drawing in pairs(espDrawings) do
+					for _, line in pairs(drawing.bones) do
+						line.Visible = false
+					end
+				end
+			end
+		end)
+
+	local espSettingsSection = visualsMenu:addSection({
+		text = "ESP Settings",
+		side = "right",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		espTeamColorEnabled = newState
+
+	espSettingsSection
+		:addToggle({
+			text = "Team Color",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			espTeamColorEnabled = newState
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+
+	espSettingsSection:addColorPicker({
+		text = "ESP Color",
+		color = espColor,
+	}, function(newColor)
+		espColor = newColor
 
 		if espEnabled then
 			RefreshESP()
 		end
 	end)
 
-espSettingsSection:addColorPicker({
-	text = "ESP Color",
-	color = espColor,
-}, function(newColor)
-	espColor = newColor
-
-	if espEnabled then
-		RefreshESP()
-	end
-end)
-
-espSettingsSection:addColorPicker({
-	text = "Excluded Color",
-	color = espExcludedColor,
-}, function(newColor)
-	espExcludedColor = newColor
-
-	if espEnabled then
-		RefreshESP()
-	end
-end)
-
-espSettingsSection
-	:addSlider({
-		text = "Tracer Distance",
-		min = 10,
-		max = 500,
-		step = 10,
-		value = TRACER_DISTANCE,
-	}, function(newValue)
-		TRACER_DISTANCE = tonumber(newValue) or TRACER_DISTANCE
-	end)
-	:setTooltip("Tracers only draw within this many studs.")
-
-espSettingsSection
-	:addToggle({
-		text = "Uncapped Distance",
-		state = true,
-	})
-	:bindToEvent("onToggle", function(newState)
-		ESP_DISTANCE_UNCAPPED = newState
+	espSettingsSection:addColorPicker({
+		text = "Excluded Color",
+		color = espExcludedColor,
+	}, function(newColor)
+		espExcludedColor = newColor
 
 		if espEnabled then
 			RefreshESP()
 		end
 	end)
 
-espSettingsSection
-	:addSlider({
-		text = "ESP Distance",
-		min = 100,
-		max = 10000,
-		step = 50,
-		value = ESP_DISTANCE_CAP,
-	}, function(newValue)
-		ESP_DISTANCE_CAP = tonumber(newValue) or ESP_DISTANCE_CAP
+	espSettingsSection
+		:addSlider({
+			text = "Tracer Distance",
+			min = 10,
+			max = 500,
+			step = 10,
+			value = TRACER_DISTANCE,
+		}, function(newValue)
+			TRACER_DISTANCE = tonumber(newValue) or TRACER_DISTANCE
+		end)
+		:setTooltip("Tracers only draw within this many studs.")
 
-		if espEnabled then
-			RefreshESP()
-		end
-	end)
-	:setTooltip("Used when uncapped distance is off.")
+	espSettingsSection
+		:addToggle({
+			text = "Uncapped Distance",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			ESP_DISTANCE_UNCAPPED = newState
 
-local lightingSection = visualsMenu:addSection({
-	text = "Lighting",
-	side = "right",
-	showMinButton = false,
-})
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
 
-lightingSection
-	:addToggle({
-		text = "Fullbright",
-		state = false,
+	espSettingsSection
+		:addSlider({
+			text = "ESP Distance",
+			min = 100,
+			max = 10000,
+			step = 50,
+			value = ESP_DISTANCE_CAP,
+		}, function(newValue)
+			ESP_DISTANCE_CAP = tonumber(newValue) or ESP_DISTANCE_CAP
+
+			if espEnabled then
+				RefreshESP()
+			end
+		end)
+		:setTooltip("Used when uncapped distance is off. This also limits aimbot and triggerbot targets.")
+
+	local radarSection = visualsMenu:addSection({
+		text = "Radar",
+		side = "right",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		SetFullbright(newState)
-	end)
 
-lightingSection
-	:addToggle({
-		text = "Disable Terrain Grass",
-		state = false,
+	radarSection
+		:addToggle({
+			text = "Radar",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			radar.SetEnabled(newState)
+		end)
+		:setTooltip("Rotates with your character and shows nearby registered targets.")
+
+	radarSection
+		:addSlider({
+			text = "Radar Range",
+			min = 50,
+			max = 2000,
+			step = 50,
+			value = radar.Range,
+		}, function(newValue)
+			radar.Range = math.clamp(tonumber(newValue) or radar.Range, 50, 2000)
+			radar.Update()
+		end)
+		:setTooltip("Maximum radar distance in studs.")
+
+	local lightingSection = visualsMenu:addSection({
+		text = "Lighting",
+		side = "right",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		SetTerrainGrassDisabled(newState)
-	end)
 
-local movementSection = playerMenu:addSection({
-	text = "Movement",
-	side = "left",
-	showMinButton = false,
-})
+	lightingSection
+		:addToggle({
+			text = "Fullbright",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetFullbright(newState)
+		end)
 
-movementSection
-	:addTextbox({
-		text = "Walkspeed",
+	lightingSection
+		:addToggle({
+			text = "Disable Terrain Grass",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetTerrainGrassDisabled(newState)
+		end)
+
+	local crosshairSection = visualsMenu:addSection({
+		text = "Crosshair",
+		side = "left",
+		showMinButton = false,
 	})
-	:bindToEvent("onFocusLost", function(text)
-		if not SetWalkSpeed(text) then
-			Notify("Invalid Walkspeed", "Enter a number from 0 to 500")
-		end
+
+	crosshairSection
+		:addToggle({
+			text = "Crosshair",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			crosshairEnabled = newState
+			UpdateCrosshair()
+		end)
+
+	crosshairSection:addColorPicker({
+		text = "Crosshair Color",
+		color = crosshairColor,
+	}, function(newColor)
+		crosshairColor = newColor
+		UpdateCrosshair()
 	end)
 
-movementSection
-	:addSlider({
-		text = "FOV",
-		min = 40,
-		max = 120,
-		step = 1,
-		value = PLAYER_FOV,
-	}, function(newValue)
-		SetPlayerFOV(newValue)
-	end)
-	:setTooltip("Changes your camera field of view.")
+	crosshairSection
+		:addSlider({
+			text = "Crosshair Size",
+			min = 2,
+			max = 30,
+			step = 1,
+			value = CROSSHAIR_SIZE,
+		}, function(newValue)
+			CROSSHAIR_SIZE = tonumber(newValue) or CROSSHAIR_SIZE
+			UpdateCrosshair()
+		end)
+		:setTooltip("Length of each crosshair arm in pixels.")
 
-movementSection
-	:addToggle({
-		text = "Noclip",
-		state = false,
+	local movementSection = playerMenu:addSection({
+		text = "Movement",
+		side = "left",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		SetNoclip(newState)
-	end)
 
-movementSection
-	:addToggle({
-		text = "Infinite Jump",
-		state = false,
+	movementSection
+		:addTextbox({
+			text = "Walkspeed",
+		})
+		:bindToEvent("onFocusLost", function(text)
+			if not SetWalkSpeed(text) then
+				Notify("Invalid Walkspeed", "Enter a number from 0 to 500")
+			end
+		end)
+
+	movementSection
+		:addSlider({
+			text = "FOV",
+			min = 40,
+			max = 120,
+			step = 1,
+			value = PLAYER_FOV,
+		}, function(newValue)
+			SetPlayerFOV(newValue)
+		end)
+		:setTooltip("Changes your camera field of view.")
+
+	movementSection
+		:addToggle({
+			text = "Noclip",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetNoclip(newState)
+		end)
+
+	movementSection
+		:addToggle({
+			text = "Infinite Jump",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetInfiniteJump(newState)
+		end)
+
+	local flightSection = playerMenu:addSection({
+		text = "Flight & Teleport",
+		side = "right",
+		showMinButton = false,
 	})
-	:bindToEvent("onToggle", function(newState)
-		SetInfiniteJump(newState)
-	end)
 
-local interfaceSection = settingsMenu:addSection({
-	text = "Interface",
-	side = "left",
-	showMinButton = false,
-})
+	flightSection
+		:addToggle({
+			text = "Fly",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			SetFly(newState)
+		end)
 
-interfaceSection:addButton({
-	text = "Unload",
-	style = "large",
-}, Unload)
+	flightSection
+		:addSlider({
+			text = "Fly Speed",
+			min = 10,
+			max = 250,
+			step = 5,
+			value = FLY_SPEED,
+		}, function(newValue)
+			FLY_SPEED = tonumber(newValue) or FLY_SPEED
+		end)
+		:setTooltip("WASD to move, Space to rise, and Ctrl to descend.")
 
-PrintLoad("interface built")
+	flightSection
+		:addToggle({
+			text = "Ctrl-Click Teleport",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			clickTeleportEnabled = newState
+		end)
+		:setTooltip("Hold either Ctrl key and left-click a visible surface.")
+
+	local interfaceSection = settingsMenu:addSection({
+		text = "Interface",
+		side = "left",
+		showMinButton = false,
+	})
+
+	interfaceSection:addButton({
+		text = "Unload",
+		style = "large",
+	}, Unload)
+
+	local utilitySection = settingsMenu:addSection({
+		text = "Utility",
+		side = "right",
+		showMinButton = false,
+	})
+
+	utilitySection
+		:addToggle({
+			text = "Anti-AFK",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			antiAFKEnabled = newState
+		end)
+		:setTooltip("Sends a small virtual input when Roblox marks the player as idle.")
+
+	PrintLoad("interface built")
+end
+
+BuildInterface()
 
 -- Runtime --------------------------------------------------------------------
 
@@ -1820,6 +2697,7 @@ TrackConnection(Players.PlayerRemoving:Connect(function(player)
 
 	if player.Character then
 		RemoveESP(player.Character)
+		radar.RemoveDot(player.Character)
 		targetModels[player.Character] = nil
 	end
 end))
@@ -1854,7 +2732,13 @@ TrackConnection(Workspace.DescendantRemoving:Connect(function(instance)
 	end
 
 	if model and targetModels[model] then
+		if aimbotSettings.LockedModel == model then
+			aimbotSettings.LockedModel = nil
+			aimbotSettings.MouseRemainder = Vector2.zero
+		end
+
 		RemoveESP(model)
+		radar.RemoveDot(model)
 		targetModels[model] = nil
 	end
 end))
@@ -1865,8 +2749,21 @@ TrackConnection(Lighting.ChildAdded:Connect(function(instance)
 	end
 end))
 
-TrackConnection(UserInputService.InputBegan:Connect(function(input)
+TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 	if UserInputService:GetFocusedTextBox() then
+		return
+	end
+
+	if
+		clickTeleportEnabled
+		and not gameProcessedEvent
+		and input.UserInputType == Enum.UserInputType.MouseButton1
+		and (
+			UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+			or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+		)
+	then
+		TeleportToCursor()
 		return
 	end
 
@@ -1882,6 +2779,8 @@ end))
 TrackConnection(UserInputService.InputEnded:Connect(function(input)
 	if IsAimbotBind(input) then
 		aimbotBindHeld = false
+		aimbotSettings.LockedModel = nil
+		aimbotSettings.MouseRemainder = Vector2.zero
 	end
 end))
 
@@ -1898,12 +2797,25 @@ TrackConnection(UserInputService.JumpRequest:Connect(function()
 	end
 end))
 
+TrackConnection(localPlayer.Idled:Connect(function()
+	if not antiAFKEnabled or isUnloaded then
+		return
+	end
+
+	pcall(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.zero)
+	end)
+end))
+
 TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	if isUnloaded then
 		return
 	end
 
 	UpdateAimbotFOVCircle()
+	UpdateCrosshair()
+	MaintainFullbright()
 
 	camera = Workspace.CurrentCamera
 
@@ -1918,29 +2830,41 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	end
 
 	UpdateNoclip()
+	UpdateFly()
 
 	environmentUpdateAccumulator += deltaTime
 
 	if environmentUpdateAccumulator >= ENVIRONMENT_UPDATE_INTERVAL then
 		environmentUpdateAccumulator %= ENVIRONMENT_UPDATE_INTERVAL
-		MaintainFullbright()
 		ApplyTerrainGrass()
 	end
 
 	if aimbotEnabled and aimbotBindHeld then
-		local targetHead, targetScreenPosition = GetClosestHeadToCrosshair()
+		local targetHead = GetLockedAimbotTarget()
 
 		if targetHead then
-			AimAtHead(targetHead, targetScreenPosition)
+			AimAtHead(targetHead)
 		end
+	else
+		aimbotSettings.LockedModel = nil
+		aimbotSettings.MouseRemainder = Vector2.zero
 	end
 
-	if espEnabled then
+	UpdateTriggerbot()
+
+	if espEnabled or radar.Enabled then
 		espUpdateAccumulator += deltaTime
 
 		if espUpdateAccumulator >= ESP_UPDATE_INTERVAL then
 			espUpdateAccumulator %= ESP_UPDATE_INTERVAL
-			RefreshESP()
+
+			if espEnabled then
+				RefreshESP()
+			end
+
+			if radar.Enabled then
+				radar.Update()
+			end
 		end
 	else
 		espUpdateAccumulator = 0
