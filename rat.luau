@@ -38,45 +38,586 @@ PrintLoad("services ready")
 
 -- Configuration --------------------------------------------------------------
 
-local UI_LIBRARY_URL = "https://raw.githubusercontent.com/topitbopit/dollarware/main/library.lua"
+local UI_LIBRARY_URL = "https://raw.githubusercontent.com/muzscripter/ui-librarys/main/octohook%20ui%20source.lua"
 local ESP_HIGHLIGHT_NAME = "RatESPHighlight"
 local ESP_INFO_NAME = "RatESPInfo"
-local ESP_UPDATE_INTERVAL = 1 / 60
 local ENVIRONMENT_UPDATE_INTERVAL = 0.25
 local DEFAULT_FOV = 70
 
-local windowThemes = {
-	"cherry",
-	"orange",
-	"lemon",
-	"lime",
-	"raspberry",
-	"blueberry",
-	"grape",
-	"watermelon",
-}
+local ui = nil
 
-PrintLoad("downloading ui library")
+do
+	PrintLoad("downloading Octohook UI")
 
-local downloadSucceeded, uiSource = pcall(function()
-	return game:HttpGet(UI_LIBRARY_URL, true)
-end)
+	local downloadSucceeded, uiSource = pcall(function()
+		return game:HttpGet(UI_LIBRARY_URL, true)
+	end)
 
-assert(downloadSucceeded, "[rat.lua] failed to download ui library: " .. tostring(uiSource))
+	assert(downloadSucceeded, "[rat.lua] failed to download Octohook UI: " .. tostring(uiSource))
+	assert(typeof(uiSource) == "string" and #uiSource > 0, "[rat.lua] Octohook UI returned an empty response")
 
-local uiLoader, uiLoadError = loadstring(uiSource)
+	local function ReplaceLiteral(source, oldText, newText, expectedCount)
+		local count = 0
+		local searchFrom = 1
+		local pieces = {}
 
-assert(uiLoader, "[rat.lua] failed to compile ui library: " .. tostring(uiLoadError))
-PrintLoad("ui library downloaded")
+		while true do
+			local first, last = string.find(source, oldText, searchFrom, true)
 
-local ui = uiLoader({
-	rounding = false,
-	theme = windowThemes[math.random(1, #windowThemes)],
-	smoothDragging = true,
-})
+			if not first then
+				table.insert(pieces, string.sub(source, searchFrom))
+				break
+			end
 
-ui.autoDisableToggles = true
-PrintLoad("ui library initialized")
+			table.insert(pieces, string.sub(source, searchFrom, first - 1))
+			table.insert(pieces, newText)
+			count += 1
+			searchFrom = last + 1
+		end
+
+		assert(
+			count == expectedCount,
+			string.format(
+				"[rat.lua] Octohook compatibility patch mismatch: expected %d, found %d",
+				expectedCount,
+				count
+			)
+		)
+
+		return table.concat(pieces)
+	end
+
+	local compatibilityPrelude = [=[
+local getgenv = getgenv or function()
+	return _G
+end
+
+local __ratSignal = {}
+
+function __ratSignal.new()
+	local signal = {
+		_handlers = {},
+		_destroyed = false,
+	}
+
+	function signal:Connect(callback)
+		assert(typeof(callback) == "function", "signal callback must be a function")
+
+		local connection = {
+			Connected = true,
+		}
+		local entry = {
+			connection = connection,
+			callback = callback,
+		}
+
+		function connection:Disconnect()
+			if not self.Connected then
+				return
+			end
+
+			self.Connected = false
+
+			for index, candidate in ipairs(signal._handlers) do
+				if candidate == entry then
+					table.remove(signal._handlers, index)
+					break
+				end
+			end
+		end
+
+		table.insert(self._handlers, entry)
+		return connection
+	end
+
+	function signal:Once(callback)
+		local connection = nil
+
+		connection = self:Connect(function(...)
+			connection:Disconnect()
+			callback(...)
+		end)
+
+		return connection
+	end
+
+	function signal:Fire(...)
+		if self._destroyed then
+			return
+		end
+
+		local arguments = table.pack(...)
+		local handlers = table.clone(self._handlers)
+
+		for _, entry in ipairs(handlers) do
+			if entry.connection.Connected then
+				task.spawn(entry.callback, table.unpack(arguments, 1, arguments.n))
+			end
+		end
+	end
+
+	function signal:Wait()
+		local waitingThread = coroutine.running()
+		local connection = nil
+
+		connection = self:Connect(function(...)
+			connection:Disconnect()
+			task.spawn(waitingThread, ...)
+		end)
+
+		return coroutine.yield()
+	end
+
+	function signal:Destroy()
+		self._destroyed = true
+
+		for _, entry in ipairs(self._handlers) do
+			entry.connection.Connected = false
+		end
+
+		table.clear(self._handlers)
+	end
+
+	return signal
+end
+
+local function __ratBase64Decode(encoded)
+	local decoder = nil
+
+	if syn and syn.crypt and syn.crypt.base64 and syn.crypt.base64.decode then
+		decoder = syn.crypt.base64.decode
+	elseif crypt and crypt.base64decode then
+		decoder = crypt.base64decode
+	elseif crypt and crypt.base64 and crypt.base64.decode then
+		decoder = crypt.base64.decode
+	end
+
+	if decoder then
+		local succeeded, decoded = pcall(decoder, encoded)
+
+		if succeeded and typeof(decoded) == "string" then
+			return decoded
+		end
+	end
+
+	local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	local cleaned = string.gsub(encoded, "[^" .. alphabet .. "=]", "")
+	local bits = string.gsub(cleaned, ".", function(character)
+		if character == "=" then
+			return ""
+		end
+
+		local value = string.find(alphabet, character, 1, true) - 1
+		local result = ""
+
+		for bit = 6, 1, -1 do
+			result ..= value % (2 ^ bit) - value % (2 ^ (bit - 1)) > 0 and "1" or "0"
+		end
+
+		return result
+	end)
+
+	return string.gsub(bits, "%d%d%d?%d?%d?%d?%d?%d?", function(byte)
+		if #byte ~= 8 then
+			return ""
+		end
+
+		local value = 0
+
+		for bit = 1, 8 do
+			if string.sub(byte, bit, bit) == "1" then
+				value += 2 ^ (8 - bit)
+			end
+		end
+
+		return string.char(value)
+	end)
+end
+]=]
+
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"if getgenv().library ~= nil then\n    getgenv().library:Unload();\nend",
+		[=[local previousLibrary = getgenv().library
+if previousLibrary ~= nil then
+    pcall(function()
+        previousLibrary:Unload()
+    end)
+
+    if typeof(previousLibrary.drawings) == 'table' then
+        local previousDrawings = {}
+
+        for _, drawing in next, previousLibrary.drawings do
+            table.insert(previousDrawings, drawing)
+        end
+
+        for _, drawing in ipairs(previousDrawings) do
+            pcall(function()
+                if typeof(drawing) == 'table' and typeof(drawing.Remove) == 'function' then
+                    drawing:Remove()
+                elseif typeof(drawing) == 'table' and drawing.Object and typeof(drawing.Object.Remove) == 'function' then
+                    drawing.Object:Remove()
+                end
+            end)
+        end
+
+        table.clear(previousLibrary.drawings)
+    end
+
+    getgenv().library = nil
+end]=],
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"    signal = loadstring(game:HttpGet('https://raw.githubusercontent.com/Quenty/NevermoreEngine/main/src/signal/src/Shared/Signal.lua'))();",
+		"    signal = __ratSignal;",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"        local proxy = newproxy(true);\n        local mt = getmetatable(proxy);",
+		"        local proxy = {};\n        local mt = {};\n        setmetatable(proxy, mt);",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"    makefolder(self.cheatname)\n    makefolder(self.cheatname..'/assets')\n    makefolder(self.cheatname..'/'..self.gamename)\n    makefolder(self.cheatname..'/'..self.gamename..'/configs');",
+		"    -- rat.lua keeps Octohook assets in memory and does not create external files.",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"    for i,v in next, self.images do\n        if not isfile(self.cheatname..'/assets/'..i..'.oh') then\n            writefile(self.cheatname..'/assets/'..i..'.oh', game:HttpGet(v))\n        end\n        self.images[i] = readfile(self.cheatname..'/assets/'..i..'.oh');\n    end",
+		"    for i,v in next, self.images do\n        local ok, imageData = pcall(function() return game:HttpGet(v) end)\n        self.images[i] = ok and imageData or ''\n    end",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"    self.cursor1 = utility:Draw('Triangle', {Filled = true, Color = fromrgb(255,255,255), ZIndex = self.zindexOrder.cursor});\n    self.cursor2 = utility:Draw('Triangle', {Filled = true, Color = fromrgb(85,85,85), self.zindexOrder.cursor-1});\n    local function updateCursor()\n        self.cursor1.Visible = self.open\n        self.cursor2.Visible = self.open\n        if self.cursor1.Visible then\n            local pos = inputservice:GetMouseLocation();\n            self.cursor1.PointA = pos;\n            self.cursor1.PointB = pos + newVector2(16,5);\n            self.cursor1.PointC = pos + newVector2(5,16);\n            self.cursor2.PointA = self.cursor1.PointA + newVector2(0, 0)\n            self.cursor2.PointB = self.cursor1.PointB + newVector2(1, 1)\n            self.cursor2.PointC = self.cursor1.PointC + newVector2(1, 1)\n        end\n    end",
+		[=[    -- This executor exposes unsupported Triangle drawings as numeric handles.
+    -- Keep Roblox's native cursor and avoid creating those incompatible objects.
+    self.cursor1 = {Visible = false};
+    self.cursor2 = {Visible = false};
+    local function updateCursor()
+        self.cursor1.Visible = false
+        self.cursor2.Visible = false
+    end]=],
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"    if syn then syn.protect_gui(screenGui); end\n    screenGui.Parent = game:GetService('CoreGui');",
+		"    if syn and syn.protect_gui then pcall(syn.protect_gui, screenGui); end\n    pcall(function() screenGui.Parent = game:GetService('CoreGui') end)\n    if not screenGui.Parent then screenGui.Parent = players.LocalPlayer:WaitForChild('PlayerGui') end;",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"function library:Unload()\n    library.unloaded:Fire();\n    for _,c in next, self.connections do\n        c:Disconnect()\n    end\n    for obj in next, self.drawings do\n        obj:Remove()\n    end\n    table.clear(self.drawings)\n    getgenv().library = nil\nend",
+		[=[function library:Unload()
+    if self._unloading then
+        return
+    end
+
+    self._unloading = true
+    library.unloaded:Fire()
+
+    for _, connection in next, self.connections do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    local drawings = {}
+
+    for _, drawing in next, self.drawings do
+        table.insert(drawings, drawing)
+    end
+
+    for _, drawing in ipairs(drawings) do
+        pcall(function()
+            if typeof(drawing) == 'table' and typeof(drawing.Remove) == 'function' then
+                drawing:Remove()
+            elseif typeof(drawing) == 'table' and drawing.Object and typeof(drawing.Object.Remove) == 'function' then
+                drawing.Object:Remove()
+            end
+        end)
+    end
+
+    table.clear(self.drawings)
+    getgenv().library = nil
+end]=],
+		1
+	)
+	uiSource = ReplaceLiteral(uiSource, "syn.crypt.base64.decode", "__ratBase64Decode", 2)
+	uiSource = compatibilityPrelude .. "\n" .. uiSource
+
+	local uiLoader, uiLoadError = loadstring(uiSource)
+
+	assert(uiLoader, "[rat.lua] failed to compile Octohook UI: " .. tostring(uiLoadError))
+	PrintLoad("Octohook UI downloaded and patched")
+
+	local nativeUi = uiLoader({
+		cheatname = "rat.lua",
+		gamename = "universal",
+		fileext = ".txt",
+	})
+
+	assert(typeof(nativeUi) == "table", "[rat.lua] Octohook UI did not return a library")
+	assert(typeof(nativeUi.init) == "function", "[rat.lua] Octohook UI is missing init()")
+
+	for themeName, themeColor in pairs(nativeUi.themes[1].theme) do
+		nativeUi.theme[themeName] = themeColor
+	end
+
+	nativeUi.toggleKey = Enum.KeyCode.RightShift
+	nativeUi:init()
+
+	ui = {
+		native = nativeUi,
+		events = {},
+		controlId = 0,
+		destroyed = false,
+		destroying = false,
+		autoDisableToggles = true,
+	}
+
+	function ui:NextFlag(kind)
+		self.controlId += 1
+		return string.format("rat_%s_%d", kind, self.controlId)
+	end
+
+	function ui:CreateControl()
+		local control = {
+			native = nil,
+			events = {},
+		}
+
+		function control:bindToEvent(eventName, callback)
+			if typeof(callback) == "function" then
+				self.events[eventName] = callback
+			end
+
+			return self
+		end
+
+		function control:emit(eventName, ...)
+			local callback = self.events[eventName]
+
+			if callback then
+				local succeeded, callbackError = pcall(callback, ...)
+
+				if not succeeded then
+					warn("[rat.lua] UI callback failed: " .. tostring(callbackError))
+				end
+			end
+		end
+
+		function control:setTooltip(tooltip)
+			if self.native then
+				self.native.tooltip = tostring(tooltip or "")
+			end
+
+			return self
+		end
+
+		function control:setText(text)
+			if self.native and typeof(self.native.SetText) == "function" then
+				self.native:SetText(tostring(text or ""))
+			end
+
+			return self
+		end
+
+		function control:setState(state)
+			if self.native and typeof(self.native.SetState) == "function" then
+				self.native:SetState(state == true)
+			end
+
+			return self
+		end
+
+		function control:getState()
+			return self.native and self.native.state == true or false
+		end
+
+		return control
+	end
+
+	function ui:WrapSection(nativeSection)
+		local section = {
+			native = nativeSection,
+		}
+
+		function section:addLabel(data)
+			local control = ui:CreateControl()
+			control.native = self.native:AddText({
+				text = tostring(data.text or ""),
+			})
+			return control
+		end
+
+		function section:addToggle(data)
+			local control = ui:CreateControl()
+			control.native = self.native:AddToggle({
+				text = tostring(data.text or "Toggle"),
+				state = data.state == true,
+				flag = ui:NextFlag("toggle"),
+				callback = function(state)
+					control:emit("onToggle", state)
+				end,
+			})
+			return control
+		end
+
+		function section:addSlider(data, callback)
+			local control = ui:CreateControl()
+			control:bindToEvent("onChange", callback)
+			control.native = self.native:AddSlider({
+				text = tostring(data.text or "Slider"),
+				min = tonumber(data.min) or 0,
+				max = tonumber(data.max) or 100,
+				increment = tonumber(data.step) or 1,
+				value = tonumber(data.value) or tonumber(data.min) or 0,
+				flag = ui:NextFlag("slider"),
+				callback = function(value)
+					control:emit("onChange", value)
+				end,
+			})
+			return control
+		end
+
+		function section:addTextbox(data)
+			local control = ui:CreateControl()
+			control.native = self.native:AddBox({
+				text = tostring(data.text or "Text"),
+				input = tostring(data.value or ""),
+				flag = ui:NextFlag("box"),
+				callback = function(value)
+					control:emit("onFocusLost", value)
+				end,
+			})
+			return control
+		end
+
+		function section:addColorPicker(data, callback)
+			local control = ui:CreateControl()
+			control:bindToEvent("onChange", callback)
+			control.native = self.native:AddColor({
+				text = tostring(data.text or "Color"),
+				color = data.color or Color3.new(1, 1, 1),
+				flag = ui:NextFlag("color"),
+				callback = function(color)
+					control:emit("onChange", color)
+				end,
+			})
+			return control
+		end
+
+		function section:addButton(data, callback)
+			local control = ui:CreateControl()
+			control.native = self.native:AddButton({
+				text = tostring(data.text or "Button"),
+				callback = function()
+					if typeof(callback) == "function" then
+						local succeeded, callbackError = pcall(callback)
+
+						if not succeeded then
+							warn("[rat.lua] UI button failed: " .. tostring(callbackError))
+						end
+					end
+				end,
+			})
+			return control
+		end
+
+		return section
+	end
+
+	function ui.newWindow(data)
+		local requestedSize = data.size or Vector2.new(560, 650)
+		local width = math.max(math.floor(requestedSize.X), 560)
+		local height = math.max(math.floor(requestedSize.Y), 650)
+		local position = data.position
+
+		if typeof(position) == "Vector2" then
+			position = UDim2.fromOffset(position.X, position.Y)
+		elseif typeof(position) ~= "UDim2" then
+			position = UDim2.new(0.5, -math.floor(width / 2), 0.5, -math.floor(height / 2))
+		end
+
+		local nativeWindow = ui.native.NewWindow({
+			title = tostring(data.text or "rat.lua"),
+			size = UDim2.fromOffset(width, height),
+			position = position,
+		})
+		local window = {
+			native = nativeWindow,
+		}
+
+		function window:addMenu(menuData)
+			local nativeTab = self.native:AddTab(tostring(menuData.text or "Menu"))
+			local menu = {
+				native = nativeTab,
+			}
+
+			function menu:addSection(sectionData)
+				local side = sectionData.side == "right" and 2 or 1
+				return ui:WrapSection(self.native:AddSection(tostring(sectionData.text or "Section"), side))
+			end
+
+			return menu
+		end
+
+		return window
+	end
+
+	function ui.notify(data)
+		local title = tostring(data.title or "rat.lua")
+		local message = tostring(data.message or "")
+		ui.native:SendNotification(title .. " | " .. message, tonumber(data.duration) or 4)
+	end
+
+	function ui:bindToEvent(eventName, callback)
+		if typeof(callback) == "function" then
+			self.events[eventName] = callback
+		end
+
+		return self
+	end
+
+	function ui.destroy()
+		if ui.destroyed or ui.destroying then
+			return
+		end
+
+		ui.destroying = true
+		local callback = ui.events.onPreDestroy
+
+		if callback then
+			pcall(callback)
+		end
+
+		pcall(function()
+			ui.native:Unload()
+		end)
+		ui.destroyed = true
+		ui.destroying = false
+	end
+
+	nativeUi.unloaded:Connect(function()
+		if not ui.destroyed and not ui.destroying then
+			ui.destroyed = true
+			local callback = ui.events.onPreDestroy
+
+			if callback then
+				pcall(callback)
+			end
+		end
+	end)
+
+	PrintLoad("Octohook UI initialized; RightShift toggles the menu")
+end
 
 -- Runtime state ---------------------------------------------------------------
 
@@ -87,7 +628,7 @@ local espEnabled = false
 local espNameEnabled = true
 local espInfoEnabled = true
 local espTracersEnabled = true
-local espBonesEnabled = true
+local espBonesEnabled = false
 local espTeamColorEnabled = true
 local fullbrightEnabled = false
 local terrainGrassDisabled = false
@@ -112,18 +653,46 @@ local desiredWalkSpeed = nil
 local aimbotSettings = {
 	Smoothness = 55,
 	FOVRadius = 150,
-	MouseDeadzone = 1.25,
-	MouseMaxStep = 90,
+	LockFOVMultiplier = 1.2,
+	MouseDeadzone = 0.35,
+	MouseMaxStep = 180,
 	MouseRemainder = Vector2.zero,
 }
 local visualSettings = {
 	Boxes = true,
 	HealthBars = true,
+	UpdateInterval = 1 / 30,
+	RefreshInterval = 0.25,
+	FarDistance = 750,
+	VeryFarDistance = 1500,
+	FarUpdateInterval = 0.1,
+	VeryFarUpdateInterval = 0.2,
+	UpdateAccumulator = 0,
+	RefreshAccumulator = 0,
+}
+local rSpy = {
+	Enabled = false,
+	TargetModel = nil,
+	TargetRoot = nil,
+	RestoreToken = 0,
+	EnabledAt = 0,
+	LastClickAt = 0,
+	MouseWasDown = false,
+	RestoreFrames = 0,
+	CameraHeight = 5,
+	CameraDistance = 12,
+	RenderStepName = "RatRSpyCamera",
+	CameraBound = false,
 }
 local radar = {
 	Enabled = false,
 	Range = 500,
+	Size = 190,
 	Dots = {},
+	Dragging = false,
+	DragInput = nil,
+	DragStart = Vector2.zero,
+	StartPosition = Vector2.zero,
 }
 local TRIGGERBOT_DELAY = 0.1
 local TRACER_DISTANCE = 100
@@ -150,7 +719,6 @@ local exclusionsLabel = nil
 local aimbotBindLabel = nil
 local wallCheckToggle = nil
 local PLAYER_FOV = camera and camera.FieldOfView or DEFAULT_FOV
-local espUpdateAccumulator = 0
 local environmentUpdateAccumulator = 0
 local mouseAimbotWarningShown = false
 local triggerbotWarningShown = false
@@ -167,6 +735,7 @@ local flyOriginalPlatformStand = nil
 local flyOriginalAutoRotate = nil
 
 wallCheckRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+wallCheckRaycastParams.IgnoreWater = true
 groundRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 triggerbotRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 teleportRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -234,13 +803,14 @@ end
 
 radar.Frame = Instance.new("Frame")
 radar.Frame.Name = "Radar"
-radar.Frame.AnchorPoint = Vector2.new(1, 1)
-radar.Frame.Position = UDim2.new(1, -24, 1, -24)
-radar.Frame.Size = UDim2.fromOffset(170, 170)
+radar.Frame.AnchorPoint = Vector2.zero
+radar.Frame.Position = UDim2.new(1, -(radar.Size + 24), 1, -(radar.Size + 24))
+radar.Frame.Size = UDim2.fromOffset(radar.Size, radar.Size)
 radar.Frame.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
 radar.Frame.BackgroundTransparency = 0.2
 radar.Frame.BorderSizePixel = 0
 radar.Frame.ClipsDescendants = true
+radar.Frame.Active = true
 radar.Frame.Visible = false
 radar.Frame.ZIndex = 103
 radar.Frame.Parent = espOverlay
@@ -271,6 +841,26 @@ radar.Vertical.Name = "Vertical"
 radar.Vertical.Rotation = 90
 radar.Vertical.Parent = radar.Frame
 
+radar.Ring = Instance.new("Frame")
+radar.Ring.Name = "RangeRing"
+radar.Ring.AnchorPoint = Vector2.new(0.5, 0.5)
+radar.Ring.Position = UDim2.fromScale(0.5, 0.5)
+radar.Ring.Size = UDim2.fromScale(0.5, 0.5)
+radar.Ring.BackgroundTransparency = 1
+radar.Ring.BorderSizePixel = 0
+radar.Ring.ZIndex = 104
+radar.Ring.Parent = radar.Frame
+
+radar.RingCorner = Instance.new("UICorner")
+radar.RingCorner.CornerRadius = UDim.new(1, 0)
+radar.RingCorner.Parent = radar.Ring
+
+radar.RingStroke = Instance.new("UIStroke")
+radar.RingStroke.Color = Color3.fromRGB(150, 150, 160)
+radar.RingStroke.Transparency = 0.72
+radar.RingStroke.Thickness = 1
+radar.RingStroke.Parent = radar.Ring
+
 radar.Center = Instance.new("Frame")
 radar.Center.Name = "LocalPlayer"
 radar.Center.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -298,6 +888,61 @@ radar.Label.TextSize = 12
 radar.Label.TextStrokeTransparency = 0.65
 radar.Label.ZIndex = 106
 radar.Label.Parent = radar.Frame
+
+radar.Forward = Instance.new("TextLabel")
+radar.Forward.Name = "Forward"
+radar.Forward.AnchorPoint = Vector2.new(0.5, 0)
+radar.Forward.Position = UDim2.new(0.5, 0, 0, 24)
+radar.Forward.Size = UDim2.fromOffset(24, 18)
+radar.Forward.BackgroundTransparency = 1
+radar.Forward.Font = Enum.Font.Code
+radar.Forward.Text = "^"
+radar.Forward.TextColor3 = Color3.fromRGB(255, 255, 255)
+radar.Forward.TextSize = 16
+radar.Forward.TextStrokeTransparency = 0.5
+radar.Forward.ZIndex = 106
+radar.Forward.Parent = radar.Frame
+
+radar.Hint = Instance.new("TextLabel")
+radar.Hint.Name = "Hint"
+radar.Hint.AnchorPoint = Vector2.new(0.5, 1)
+radar.Hint.Position = UDim2.new(0.5, 0, 1, -7)
+radar.Hint.Size = UDim2.new(1, -20, 0, 16)
+radar.Hint.BackgroundTransparency = 1
+radar.Hint.Font = Enum.Font.Code
+radar.Hint.Text = "drag to move | edge = out of range"
+radar.Hint.TextColor3 = Color3.fromRGB(175, 175, 185)
+radar.Hint.TextSize = 10
+radar.Hint.TextStrokeTransparency = 0.75
+radar.Hint.ZIndex = 106
+radar.Hint.Parent = radar.Frame
+
+rSpy.Label = Instance.new("TextLabel")
+rSpy.Label.Name = "RSpyStatus"
+rSpy.Label.AnchorPoint = Vector2.new(0.5, 0)
+rSpy.Label.Position = UDim2.new(0.5, 0, 0, 16)
+rSpy.Label.Size = UDim2.fromOffset(420, 42)
+rSpy.Label.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+rSpy.Label.BackgroundTransparency = 0.25
+rSpy.Label.BorderSizePixel = 0
+rSpy.Label.Font = Enum.Font.Code
+rSpy.Label.Text = ""
+rSpy.Label.TextColor3 = Color3.fromRGB(255, 255, 255)
+rSpy.Label.TextSize = 14
+rSpy.Label.TextStrokeTransparency = 0.65
+rSpy.Label.Visible = false
+rSpy.Label.ZIndex = 110
+rSpy.Label.Parent = espOverlay
+
+rSpy.LabelCorner = Instance.new("UICorner")
+rSpy.LabelCorner.CornerRadius = UDim.new(0, 4)
+rSpy.LabelCorner.Parent = rSpy.Label
+
+rSpy.LabelStroke = Instance.new("UIStroke")
+rSpy.LabelStroke.Color = Color3.fromRGB(215, 215, 225)
+rSpy.LabelStroke.Transparency = 0.45
+rSpy.LabelStroke.Thickness = 1
+rSpy.LabelStroke.Parent = rSpy.Label
 
 PrintLoad("overlay initialized")
 
@@ -486,41 +1131,44 @@ local function HasWallCheck(model, targetPart)
 	camera = Workspace.CurrentCamera
 
 	if not camera or not targetPart then
-		return false
+		return false, nil
 	end
 
 	local ignoreList = { camera }
-	local obscuringIgnoreList = { camera, model }
 
 	if localPlayer.Character then
 		table.insert(ignoreList, localPlayer.Character)
-		table.insert(obscuringIgnoreList, localPlayer.Character)
 	end
 
 	wallCheckRaycastParams.FilterDescendantsInstances = ignoreList
 
 	local origin = camera.CFrame.Position
-	local direction = targetPart.Position - origin
+	local center = targetPart.Position
+	local rightOffset = targetPart.CFrame.RightVector * math.min(targetPart.Size.X * 0.32, 0.65)
+	local upOffset = targetPart.CFrame.UpVector * math.min(targetPart.Size.Y * 0.32, 0.65)
+	local samplePoints = {
+		center,
+		center + upOffset,
+		center + rightOffset,
+		center - rightOffset,
+		center - (upOffset * 0.55),
+	}
 
-	if direction.Magnitude <= 0.001 then
-		return true
-	end
+	for _, samplePoint in ipairs(samplePoints) do
+		local direction = samplePoint - origin
 
-	local obscuringSucceeded, obscuringParts = pcall(function()
-		return camera:GetPartsObscuringTarget({ targetPart.Position }, obscuringIgnoreList)
-	end)
+		if direction.Magnitude <= 0.001 then
+			return true, samplePoint
+		end
 
-	if obscuringSucceeded then
-		for _, part in ipairs(obscuringParts) do
-			if part:IsA("BasePart") and part.Transparency < 0.95 and part.LocalTransparencyModifier < 0.95 then
-				return false
-			end
+		local result = Workspace:Raycast(origin, direction, wallCheckRaycastParams)
+
+		if not result or result.Instance:IsDescendantOf(model) then
+			return true, samplePoint
 		end
 	end
 
-	local result = Workspace:Raycast(origin, direction, wallCheckRaycastParams)
-
-	return not result or GetCharacterFromPart(result.Instance) == model
+	return false, center
 end
 
 local function GetTargets()
@@ -535,6 +1183,449 @@ local function GetTargets()
 	end
 
 	return targets
+end
+
+local IsWithinESPDistance
+
+function rSpy.GetDisplayName(model)
+	local player = Players:GetPlayerFromCharacter(model)
+
+	if player then
+		return player.DisplayName ~= player.Name and (player.DisplayName .. " (@" .. player.Name .. ")")
+			or ("@" .. player.Name)
+	end
+
+	return model and model.Name or "unknown target"
+end
+
+function rSpy.AttachLocalCamera(character)
+	camera = Workspace.CurrentCamera
+	character = character or localPlayer.Character
+
+	if not camera or not character then
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	local head = character:FindFirstChild("Head")
+	local subject = humanoid or root or head
+
+	if not subject then
+		return false
+	end
+
+	local attached = pcall(function()
+		camera.CameraType = Enum.CameraType.Fixed
+		camera.CameraSubject = subject
+
+		if root then
+			local focusPosition = head and head.Position or (root.Position + Vector3.new(0, 2, 0))
+			local cameraPosition = root.CFrame:PointToWorldSpace(Vector3.new(0, 5, 12))
+			camera.CFrame = CFrame.lookAt(cameraPosition, focusPosition)
+			camera.Focus = CFrame.new(focusPosition)
+		end
+
+		camera.CameraType = Enum.CameraType.Custom
+		camera.CameraSubject = subject
+	end)
+
+	return attached
+end
+
+function rSpy.RestoreCamera(showNotice)
+	local wasWatching = rSpy.TargetModel ~= nil
+	rSpy.RestoreToken += 1
+	local restoreToken = rSpy.RestoreToken
+	rSpy.TargetModel = nil
+	rSpy.TargetRoot = nil
+	rSpy.RestoreFrames = isUnloaded and 0 or 30
+	rSpy.Label.Visible = false
+	rSpy.Label.Text = ""
+	local attached = rSpy.AttachLocalCamera()
+
+	if not attached and not isUnloaded then
+		task.spawn(function()
+			for _ = 1, 50 do
+				if isUnloaded or rSpy.TargetModel or rSpy.RestoreToken ~= restoreToken then
+					return
+				end
+
+				if rSpy.AttachLocalCamera() then
+					return
+				end
+
+				task.wait(0.1)
+			end
+		end)
+	end
+
+	if showNotice and wasWatching then
+		Notify("RSpy", "Camera returned to your character")
+	end
+end
+
+function rSpy.SetEnabled(enabled)
+	rSpy.Enabled = enabled
+	rSpy.EnabledAt = os.clock()
+	rSpy.MouseWasDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+	print(string.format("[rat.lua] [rspy] %s", enabled and "enabled" or "disabled"))
+
+	if not enabled then
+		rSpy.RestoreCamera(true)
+	elseif not espEnabled then
+		Notify("RSpy", "Enable ESP, then left-click a highlighted target")
+	else
+		Notify("RSpy", "Left-click a highlighted target to spectate")
+	end
+end
+
+function rSpy.ApplyCamera()
+	local model = rSpy.TargetModel
+
+	if not rSpy.Enabled or not model or not model.Parent then
+		return false
+	end
+
+	local humanoid, head, root = GetCharacterParts(model)
+	camera = Workspace.CurrentCamera
+
+	if not humanoid or not root or not camera then
+		return false
+	end
+
+	rSpy.TargetRoot = root
+	local focusPosition = head and head.Position or (root.Position + Vector3.new(0, 2, 0))
+	local cameraPosition = root.CFrame:PointToWorldSpace(Vector3.new(0, rSpy.CameraHeight, rSpy.CameraDistance))
+
+	return pcall(function()
+		camera.CameraType = Enum.CameraType.Scriptable
+		camera.CameraSubject = humanoid
+		camera.CFrame = CFrame.lookAt(cameraPosition, focusPosition)
+		camera.Focus = CFrame.new(focusPosition)
+	end)
+end
+
+function rSpy.SetTarget(model)
+	if
+		not rSpy.Enabled
+		or not espEnabled
+		or not model
+		or not targetModels[model]
+		or not IsTargetModel(model)
+		or not IsWithinESPDistance(model)
+	then
+		return false
+	end
+
+	local humanoid, _, root = GetCharacterParts(model)
+
+	if not humanoid or not root or not Workspace.CurrentCamera then
+		return false
+	end
+
+	rSpy.RestoreToken += 1
+	rSpy.TargetModel = model
+	rSpy.TargetRoot = root
+	rSpy.RestoreFrames = 0
+
+	if not rSpy.ApplyCamera() then
+		rSpy.TargetModel = nil
+		rSpy.TargetRoot = nil
+		print("[rat.lua] [rspy] camera attach failed")
+		return false
+	end
+
+	rSpy.Label.Text = "rspy | " .. rSpy.GetDisplayName(model) .. "\nleft-click another target or disable rspy to return"
+	rSpy.Label.Visible = true
+	Notify("RSpy", "Spectating " .. rSpy.GetDisplayName(model))
+	return true
+end
+
+function rSpy.GetTargetAtCursor()
+	if not rSpy.Enabled or not espEnabled then
+		return nil
+	end
+
+	camera = Workspace.CurrentCamera
+
+	if not camera then
+		return nil
+	end
+
+	local rawMousePosition = UserInputService:GetMouseLocation()
+
+	if radar.IsPointInside and radar.IsPointInside(rawMousePosition) then
+		return nil
+	end
+
+	local inset = Vector2.zero
+	pcall(function()
+		inset = GuiService:GetGuiInset()
+	end)
+
+	local cursorPositions = { rawMousePosition, rawMousePosition - inset }
+	local raycastParams = RaycastParams.new()
+	local ignoreList = { camera }
+
+	if localPlayer.Character then
+		table.insert(ignoreList, localPlayer.Character)
+	end
+
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = ignoreList
+	raycastParams.IgnoreWater = true
+
+	local directModel = nil
+
+	pcall(function()
+		directModel = GetCharacterFromPart(localPlayer:GetMouse().Target)
+	end)
+
+	if directModel and targetModels[directModel] and IsWithinESPDistance(directModel) then
+		return directModel, 1
+	end
+
+	for _, cursorPosition in ipairs(cursorPositions) do
+		local ray = camera:ViewportPointToRay(cursorPosition.X, cursorPosition.Y)
+		local result = Workspace:Raycast(ray.Origin, ray.Direction * 100000, raycastParams)
+		directModel = result and GetCharacterFromPart(result.Instance)
+
+		if directModel and targetModels[directModel] and IsWithinESPDistance(directModel) then
+			return directModel, 1
+		end
+	end
+
+	local closestModel = nil
+	local closestDistance = math.huge
+	local candidateCount = 0
+
+	for _, model in ipairs(GetTargets()) do
+		if IsWithinESPDistance(model) then
+			candidateCount += 1
+			local boxCFrame, boxSize = model:GetBoundingBox()
+			local minimum = Vector2.new(math.huge, math.huge)
+			local maximum = Vector2.new(-math.huge, -math.huge)
+			local projectedCorners = 0
+			local selectionDistance = math.huge
+
+			for x = -1, 1, 2 do
+				for y = -1, 1, 2 do
+					for z = -1, 1, 2 do
+						local offset = Vector3.new(boxSize.X * x, boxSize.Y * y, boxSize.Z * z) / 2
+						local point = camera:WorldToViewportPoint(boxCFrame:PointToWorldSpace(offset))
+
+						if point.Z > 0 then
+							minimum = Vector2.new(math.min(minimum.X, point.X), math.min(minimum.Y, point.Y))
+							maximum = Vector2.new(math.max(maximum.X, point.X), math.max(maximum.Y, point.Y))
+							projectedCorners += 1
+						end
+					end
+				end
+			end
+
+			if projectedCorners > 0 then
+				local boxDimensions = maximum - minimum
+				local clickPadding = math.clamp(45 - (math.min(boxDimensions.X, boxDimensions.Y) * 0.35), 14, 45)
+
+				for _, cursorPosition in ipairs(cursorPositions) do
+					local nearestBoxPoint = Vector2.new(
+						math.clamp(cursorPosition.X, minimum.X, maximum.X),
+						math.clamp(cursorPosition.Y, minimum.Y, maximum.Y)
+					)
+					local boxDistance = (cursorPosition - nearestBoxPoint).Magnitude
+
+					if boxDistance <= clickPadding then
+						selectionDistance = math.min(selectionDistance, boxDistance)
+					end
+				end
+			end
+
+			local billboard = model:FindFirstChild(ESP_INFO_NAME)
+			local infoLabel = billboard and billboard:FindFirstChild("Info")
+
+			if infoLabel and infoLabel:IsA("GuiObject") and infoLabel.Visible then
+				local labelPosition = infoLabel.AbsolutePosition
+				local labelSize = infoLabel.AbsoluteSize
+
+				for _, cursorPosition in ipairs(cursorPositions) do
+					local nearestLabelPoint = Vector2.new(
+						math.clamp(cursorPosition.X, labelPosition.X, labelPosition.X + labelSize.X),
+						math.clamp(cursorPosition.Y, labelPosition.Y, labelPosition.Y + labelSize.Y)
+					)
+					local labelDistance = (cursorPosition - nearestLabelPoint).Magnitude
+
+					if labelDistance <= 12 then
+						selectionDistance = math.min(selectionDistance, labelDistance)
+					end
+				end
+			end
+
+			if selectionDistance < closestDistance then
+				closestDistance = selectionDistance
+				closestModel = model
+			end
+		end
+	end
+
+	return closestModel, candidateCount
+end
+
+function rSpy.HandleClick(source)
+	if not rSpy.Enabled or not espEnabled or UserInputService:GetFocusedTextBox() then
+		return false
+	end
+
+	if
+		UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
+	then
+		return false
+	end
+
+	local now = os.clock()
+
+	if now - rSpy.EnabledAt < 0.2 or now - rSpy.LastClickAt < 0.12 then
+		return false
+	end
+
+	rSpy.LastClickAt = now
+	local target, candidateCount = rSpy.GetTargetAtCursor()
+
+	if target then
+		print(string.format("[rat.lua] [rspy] click via %s -> %s", source, rSpy.GetDisplayName(target)))
+		return rSpy.SetTarget(target)
+	end
+
+	print(
+		string.format(
+			"[rat.lua] [rspy] click via %s -> no target (%d candidates in esp range)",
+			source,
+			candidateCount or 0
+		)
+	)
+	return false
+end
+
+function rSpy.Update()
+	local model = rSpy.TargetModel
+
+	if not model then
+		return
+	end
+
+	if
+		not rSpy.Enabled
+		or not espEnabled
+		or not targetModels[model]
+		or not IsTargetModel(model)
+		or not IsWithinESPDistance(model)
+	then
+		rSpy.RestoreCamera(true)
+		return
+	end
+
+	local humanoid, _, targetRoot = GetCharacterParts(model)
+
+	if not humanoid or not targetRoot or not Workspace.CurrentCamera then
+		rSpy.RestoreCamera(true)
+		return
+	end
+
+	if not rSpy.CameraBound then
+		rSpy.ApplyCamera()
+	end
+	local localRoot = GetLocalRoot()
+	local distance = targetRoot and localRoot and math.floor((targetRoot.Position - localRoot.Position).Magnitude) or 0
+	rSpy.Label.Text = string.format(
+		"rspy | %s | %d studs\nleft-click another target or disable rspy to return",
+		rSpy.GetDisplayName(model),
+		distance
+	)
+end
+
+function radar.IsPointInside(screenPosition)
+	if not radar.Enabled or not radar.Frame.Visible then
+		return false
+	end
+
+	local position = radar.Frame.AbsolutePosition
+	local size = radar.Frame.AbsoluteSize
+	return screenPosition.X >= position.X
+		and screenPosition.X <= position.X + size.X
+		and screenPosition.Y >= position.Y
+		and screenPosition.Y <= position.Y + size.Y
+end
+
+function radar.SetAbsolutePosition(position)
+	local viewportSize = espOverlay.AbsoluteSize
+	local frameSize = radar.Frame.AbsoluteSize
+
+	if viewportSize.X <= 0 or viewportSize.Y <= 0 then
+		camera = Workspace.CurrentCamera
+		viewportSize = camera and camera.ViewportSize or Vector2.new(1920, 1080)
+	end
+
+	if frameSize.X <= 0 or frameSize.Y <= 0 then
+		frameSize = Vector2.new(radar.Size, radar.Size)
+	end
+
+	local x = math.clamp(position.X, 8, math.max(8, viewportSize.X - frameSize.X - 8))
+	local y = math.clamp(position.Y, 8, math.max(8, viewportSize.Y - frameSize.Y - 8))
+	radar.Frame.Position = UDim2.fromOffset(x, y)
+end
+
+function radar.ClampPosition()
+	radar.SetAbsolutePosition(radar.Frame.AbsolutePosition)
+end
+
+function radar.ResetPosition()
+	radar.Frame.Position = UDim2.new(1, -(radar.Size + 24), 1, -(radar.Size + 24))
+	task.defer(radar.ClampPosition)
+end
+
+function radar.SetSize(size)
+	radar.Size = math.clamp(tonumber(size) or radar.Size, 140, 260)
+	radar.Frame.Size = UDim2.fromOffset(radar.Size, radar.Size)
+	task.defer(radar.ClampPosition)
+end
+
+function radar.BeginDrag(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+		return
+	end
+
+	radar.Dragging = true
+	radar.DragInput = input
+	radar.DragStart = Vector2.new(input.Position.X, input.Position.Y)
+	radar.StartPosition = radar.Frame.AbsolutePosition
+end
+
+function radar.UpdateDrag(input)
+	if not radar.Dragging then
+		return
+	end
+
+	if radar.DragInput.UserInputType == Enum.UserInputType.Touch then
+		if input ~= radar.DragInput then
+			return
+		end
+	elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
+		return
+	end
+
+	local currentPosition = Vector2.new(input.Position.X, input.Position.Y)
+	radar.SetAbsolutePosition(radar.StartPosition + (currentPosition - radar.DragStart))
+end
+
+function radar.EndDrag(input)
+	if not radar.Dragging then
+		return
+	end
+
+	if input == radar.DragInput or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		radar.Dragging = false
+		radar.DragInput = nil
+	end
 end
 
 function radar.RemoveDot(model)
@@ -557,8 +1648,11 @@ function radar.SetEnabled(enabled)
 	radar.Frame.Visible = enabled
 
 	if enabled then
+		radar.ClampPosition()
 		radar.Update()
 	else
+		radar.Dragging = false
+		radar.DragInput = nil
 		radar.Clear()
 	end
 end
@@ -567,6 +1661,8 @@ function radar.Update()
 	if not radar.Enabled then
 		return
 	end
+
+	radar.ClampPosition()
 
 	local localRoot = GetLocalRoot()
 
@@ -577,7 +1673,8 @@ function radar.Update()
 
 	local activeModels = {}
 	local center = radar.Frame.AbsoluteSize / 2
-	local radius = math.max(1, math.min(center.X, center.Y) - 9)
+	local radius = math.max(1, math.min(center.X, center.Y) - 13)
+	local activeCount = 0
 
 	for _, model in ipairs(GetTargets()) do
 		local humanoid, _, root = GetCharacterParts(model)
@@ -586,31 +1683,52 @@ function radar.Update()
 			local worldOffset = root.Position - localRoot.Position
 			local localOffset = localRoot.CFrame:VectorToObjectSpace(worldOffset)
 			local mapOffset = Vector2.new(localOffset.X, localOffset.Z)
+			local distance = mapOffset.Magnitude
+			local outOfRange = distance > radar.Range
+			local scaledOffset = Vector2.zero
 
-			if mapOffset.Magnitude <= radar.Range then
-				local dot = radar.Dots[model]
-
-				if not dot then
-					dot = Instance.new("Frame")
-					dot.Name = "Target"
-					dot.AnchorPoint = Vector2.new(0.5, 0.5)
-					dot.Size = UDim2.fromOffset(7, 7)
-					dot.BorderSizePixel = 0
-					dot.ZIndex = 107
-					dot.Parent = radar.Frame
-
-					local corner = Instance.new("UICorner")
-					corner.CornerRadius = UDim.new(1, 0)
-					corner.Parent = dot
-					radar.Dots[model] = dot
-				end
-
-				local scaledOffset = mapOffset * (radius / math.max(radar.Range, 1))
-				dot.Position = UDim2.fromOffset(center.X + scaledOffset.X, center.Y + scaledOffset.Y)
-				dot.BackgroundColor3 = GetESPColor(model)
-				dot.Visible = true
-				activeModels[model] = true
+			if distance > 0.001 then
+				scaledOffset = mapOffset.Unit * (radius * math.clamp(distance / math.max(radar.Range, 1), 0, 1))
 			end
+
+			local dot = radar.Dots[model]
+
+			if not dot then
+				dot = Instance.new("Frame")
+				dot.Name = "Target"
+				dot.AnchorPoint = Vector2.new(0.5, 0.5)
+				dot.BorderSizePixel = 0
+				dot.ZIndex = 107
+				dot.Parent = radar.Frame
+
+				local corner = Instance.new("UICorner")
+				corner.CornerRadius = UDim.new(1, 0)
+				corner.Parent = dot
+
+				local stroke = Instance.new("UIStroke")
+				stroke.Name = "Selected"
+				stroke.Color = Color3.fromRGB(255, 255, 255)
+				stroke.Thickness = 2
+				stroke.Enabled = false
+				stroke.Parent = dot
+				radar.Dots[model] = dot
+			end
+
+			local selected = rSpy.TargetModel == model
+			local stroke = dot:FindFirstChild("Selected")
+			dot.Position = UDim2.fromOffset(center.X + scaledOffset.X, center.Y + scaledOffset.Y)
+			dot.Size =
+				UDim2.fromOffset(selected and 10 or (outOfRange and 6 or 8), selected and 10 or (outOfRange and 6 or 8))
+			dot.BackgroundColor3 = GetESPColor(model)
+			dot.BackgroundTransparency = outOfRange and 0.35 or 0
+			dot.Visible = true
+
+			if stroke and stroke:IsA("UIStroke") then
+				stroke.Enabled = selected
+			end
+
+			activeCount += 1
+			activeModels[model] = true
 		end
 	end
 
@@ -620,7 +1738,7 @@ function radar.Update()
 		end
 	end
 
-	radar.Label.Text = "radar | " .. math.floor(radar.Range) .. " studs"
+	radar.Label.Text = string.format("radar | %d studs | %d targets", math.floor(radar.Range), activeCount)
 end
 
 -- ESP ------------------------------------------------------------------------
@@ -662,6 +1780,7 @@ local function GetDrawing(model)
 
 	espDrawings[model] = {
 		container = container,
+		lastUpdate = 0,
 		tracer = MakeLine(container, "Tracer"),
 		box = {
 			MakeLine(container, "BoxTop"),
@@ -854,7 +1973,7 @@ local function UpdateESPDrawings(model)
 	end
 end
 
-local function IsWithinESPDistance(model)
+IsWithinESPDistance = function(model)
 	if ESP_DISTANCE_UNCAPPED then
 		return true
 	end
@@ -990,10 +2109,42 @@ local function RefreshESP()
 	for _, model in ipairs(GetTargets()) do
 		if IsWithinESPDistance(model) then
 			CreateESP(model)
-			UpdateESPLabel(model)
-			UpdateESPDrawings(model)
 		else
 			RemoveESP(model)
+		end
+	end
+end
+
+local function UpdateESPVisuals()
+	local localRoot = GetLocalRoot()
+	local now = os.clock()
+
+	for model in pairs(targetModels) do
+		if IsTargetModel(model) and IsWithinESPDistance(model) then
+			local _, _, root = GetCharacterParts(model)
+			local drawing = espDrawings[model]
+			local updateInterval = 0
+
+			if localRoot and root then
+				local distance = (localRoot.Position - root.Position).Magnitude
+
+				if distance >= visualSettings.VeryFarDistance then
+					updateInterval = visualSettings.VeryFarUpdateInterval
+				elseif distance >= visualSettings.FarDistance then
+					updateInterval = visualSettings.FarUpdateInterval
+				end
+			end
+
+			if not drawing or now - drawing.lastUpdate >= updateInterval then
+				UpdateESPDrawings(model)
+				drawing = espDrawings[model]
+
+				if drawing then
+					drawing.lastUpdate = now
+				end
+			end
+		elseif espDrawings[model] then
+			HideDrawing(espDrawings[model])
 		end
 	end
 end
@@ -1008,6 +2159,8 @@ end
 
 local function SetESP(enabled)
 	espEnabled = enabled
+	visualSettings.UpdateAccumulator = 0
+	visualSettings.RefreshAccumulator = 0
 
 	if espEnabled then
 		for _, model in ipairs(GetTargets()) do
@@ -1016,6 +2169,7 @@ local function SetESP(enabled)
 			end
 		end
 	else
+		rSpy.RestoreCamera(true)
 		RemoveAllESP()
 	end
 end
@@ -1663,10 +2817,8 @@ local function SetWallCheck(enabled, syncToggle)
 		and wallCheckToggle:getState() ~= wallCheckEnabled
 	then
 		pcall(function()
-			if wallCheckEnabled and typeof(wallCheckToggle.enable) == "function" then
-				wallCheckToggle:enable()
-			elseif not wallCheckEnabled and typeof(wallCheckToggle.disable) == "function" then
-				wallCheckToggle:disable()
+			if typeof(wallCheckToggle.setState) == "function" then
+				wallCheckToggle:setState(wallCheckEnabled)
 			end
 		end)
 	end
@@ -1770,14 +2922,14 @@ local function UpdateCrosshair()
 	crosshairLines[4].Size = UDim2.fromOffset(thickness, length)
 end
 
-local function IsScreenPointInAimbotFOV(screenPosition)
+local function IsScreenPointInAimbotFOV(screenPosition, radiusMultiplier)
 	local aimOrigin = GetAimbotScreenOrigin()
 
 	if not aimOrigin then
 		return false
 	end
 
-	return (screenPosition - aimOrigin).Magnitude <= aimbotSettings.FOVRadius
+	return (screenPosition - aimOrigin).Magnitude <= aimbotSettings.FOVRadius * (radiusMultiplier or 1)
 end
 
 local function IsSameTeam(model)
@@ -1789,29 +2941,44 @@ local function IsSameTeam(model)
 	return player ~= nil and player.Team == localPlayer.Team
 end
 
-local function IsValidAimbotTarget(model)
+local function GetAimbotTargetPoint(model)
 	if not IsTargetModel(model) then
-		return false
+		return nil, nil
 	end
 
 	if not IsWithinESPDistance(model) then
-		return false
-	end
-
-	if espEnabled and not model:FindFirstChild(ESP_HIGHLIGHT_NAME) then
-		return false
+		return nil, nil
 	end
 
 	if IsAimbotExcluded(model) then
-		return false
+		return nil, nil
 	end
 
 	if IsSameTeam(model) then
-		return false
+		return nil, nil
 	end
 
 	local _, head = GetCharacterParts(model)
-	return not wallCheckEnabled or HasWallCheck(model, head)
+
+	if not head then
+		return nil, nil
+	end
+
+	if not wallCheckEnabled then
+		return head, head.Position
+	end
+
+	local visible, visiblePoint = HasWallCheck(model, head)
+
+	if not visible then
+		return nil, nil
+	end
+
+	return head, visiblePoint or head.Position
+end
+
+local function IsValidAimbotTarget(model)
+	return GetAimbotTargetPoint(model) ~= nil
 end
 
 local function GetClosestHeadToCrosshair()
@@ -1830,12 +2997,14 @@ local function GetClosestHeadToCrosshair()
 	local closestHead = nil
 	local closestScreenPosition = nil
 	local closestModel = nil
+	local closestAimPosition = nil
 	local closestDistance = math.huge
 
 	for _, model in ipairs(GetTargets()) do
-		if IsValidAimbotTarget(model) then
-			local head = model:FindFirstChild("Head")
-			local screenPoint, onScreen = camera:WorldToViewportPoint(head.Position)
+		local head, aimPosition = GetAimbotTargetPoint(model)
+
+		if head and aimPosition then
+			local screenPoint, onScreen = camera:WorldToViewportPoint(aimPosition)
 
 			if onScreen and screenPoint.Z > 0 then
 				local screenPosition = Vector2.new(screenPoint.X, screenPoint.Y)
@@ -1846,12 +3015,13 @@ local function GetClosestHeadToCrosshair()
 					closestHead = head
 					closestScreenPosition = screenPosition
 					closestModel = model
+					closestAimPosition = aimPosition
 				end
 			end
 		end
 	end
 
-	return closestHead, closestScreenPosition, closestModel
+	return closestHead, closestScreenPosition, closestModel, closestAimPosition
 end
 
 local function GetLockedAimbotTarget()
@@ -1863,17 +3033,17 @@ local function GetLockedAimbotTarget()
 		return nil
 	end
 
-	if aimbotSettings.LockedModel and IsValidAimbotTarget(aimbotSettings.LockedModel) then
-		local head = aimbotSettings.LockedModel:FindFirstChild("Head")
+	if aimbotSettings.LockedModel then
+		local head, aimPosition = GetAimbotTargetPoint(aimbotSettings.LockedModel)
 
-		if head then
-			local point, onScreen = camera:WorldToViewportPoint(head.Position)
+		if head and aimPosition then
+			local point, onScreen = camera:WorldToViewportPoint(aimPosition)
 
 			if onScreen and point.Z > 0 then
 				local screenPosition = Vector2.new(point.X, point.Y)
 
-				if IsScreenPointInAimbotFOV(screenPosition) then
-					return head, screenPosition
+				if IsScreenPointInAimbotFOV(screenPosition, aimbotSettings.LockFOVMultiplier) then
+					return head, screenPosition, aimPosition
 				end
 			end
 		end
@@ -1882,12 +3052,12 @@ local function GetLockedAimbotTarget()
 	aimbotSettings.LockedModel = nil
 	aimbotSettings.MouseRemainder = Vector2.zero
 
-	local head, screenPosition, model = GetClosestHeadToCrosshair()
+	local head, screenPosition, model, aimPosition = GetClosestHeadToCrosshair()
 	aimbotSettings.LockedModel = model
-	return head, screenPosition
+	return head, screenPosition, aimPosition
 end
 
-local function MoveMouseTowardScreenPosition(screenPosition)
+local function MoveMouseTowardScreenPosition(screenPosition, deltaTime)
 	camera = Workspace.CurrentCamera
 
 	if not camera or not screenPosition then
@@ -1907,7 +3077,9 @@ local function MoveMouseTowardScreenPosition(screenPosition)
 		return true
 	end
 
-	local response = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	local baseResponse = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	local frameScale = math.clamp((tonumber(deltaTime) or (1 / 60)) * 60, 0.25, 3)
+	local response = 1 - math.pow(1 - baseResponse, frameScale)
 	local delta = (rawDelta * response) + aimbotSettings.MouseRemainder
 
 	if delta.Magnitude > aimbotSettings.MouseMaxStep then
@@ -1915,9 +3087,33 @@ local function MoveMouseTowardScreenPosition(screenPosition)
 		aimbotSettings.MouseRemainder = Vector2.zero
 	end
 
-	local deltaX = delta.X >= 0 and math.floor(delta.X) or math.ceil(delta.X)
-	local deltaY = delta.Y >= 0 and math.floor(delta.Y) or math.ceil(delta.Y)
+	local deltaX = delta.X >= 0 and math.floor(delta.X + 0.5) or math.ceil(delta.X - 0.5)
+	local deltaY = delta.Y >= 0 and math.floor(delta.Y + 0.5) or math.ceil(delta.Y - 0.5)
+
+	if deltaX == 0 and math.abs(rawDelta.X) > aimbotSettings.MouseDeadzone then
+		deltaX = rawDelta.X > 0 and 1 or -1
+	end
+
+	if deltaY == 0 and math.abs(rawDelta.Y) > aimbotSettings.MouseDeadzone then
+		deltaY = rawDelta.Y > 0 and 1 or -1
+	end
+
 	aimbotSettings.MouseRemainder = delta - Vector2.new(deltaX, deltaY)
+
+	if
+		UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter
+		and typeof(mousemoveabs) == "function"
+	then
+		local nextPosition = rawDelta.Magnitude <= 2
+			and (screenPosition + topLeftInset)
+			or (aimOrigin + Vector2.new(deltaX, deltaY) + topLeftInset)
+
+		if rawDelta.Magnitude <= 2 then
+			aimbotSettings.MouseRemainder = Vector2.zero
+		end
+
+		return pcall(mousemoveabs, nextPosition.X, nextPosition.Y)
+	end
 
 	if typeof(mousemoverel) == "function" then
 		return pcall(mousemoverel, deltaX, deltaY)
@@ -1931,21 +3127,36 @@ local function MoveMouseTowardScreenPosition(screenPosition)
 	return false
 end
 
-local function AimAtHead(head)
+local function AimAtHead(head, aimPosition, deltaTime)
 	camera = Workspace.CurrentCamera
 
 	if not camera or not head or not head:IsDescendantOf(Workspace) then
 		return
 	end
 
+	aimPosition = typeof(aimPosition) == "Vector3" and aimPosition or head.Position
+
 	if mouseAimbotEnabled then
-		local point, onScreen = camera:WorldToViewportPoint(head.Position)
+		local point, onScreen = camera:WorldToViewportPoint(aimPosition)
 
 		if not onScreen or point.Z <= 0 then
 			return
 		end
 
-		local movedMouse = MoveMouseTowardScreenPosition(Vector2.new(point.X, point.Y))
+		local screenPosition = Vector2.new(point.X, point.Y)
+		local aimOrigin = GetAimbotScreenOrigin()
+
+		if
+			aimOrigin
+			and UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+			and (screenPosition - aimOrigin).Magnitude <= 1.5
+		then
+			aimbotSettings.MouseRemainder = Vector2.zero
+			camera.CFrame = CFrame.lookAt(camera.CFrame.Position, aimPosition)
+			return
+		end
+
+		local movedMouse = MoveMouseTowardScreenPosition(screenPosition, deltaTime)
 
 		if not movedMouse and not mouseAimbotWarningShown then
 			mouseAimbotWarningShown = true
@@ -1956,8 +3167,11 @@ local function AimAtHead(head)
 	end
 
 	local position = camera.CFrame.Position
-	local targetCFrame = CFrame.lookAt(position, head.Position)
-	camera.CFrame = camera.CFrame:Lerp(targetCFrame, math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1))
+	local targetCFrame = CFrame.lookAt(position, aimPosition)
+	local baseResponse = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	local frameScale = math.clamp((tonumber(deltaTime) or (1 / 60)) * 60, 0.25, 3)
+	local response = 1 - math.pow(1 - baseResponse, frameScale)
+	camera.CFrame = camera.CFrame:Lerp(targetCFrame, response)
 end
 
 local function ClickMouseOnce()
@@ -2036,6 +3250,10 @@ local function WatchPlayer(player)
 			RestoreNoclipCollisions()
 			DestroyFlyMovers()
 
+			if not rSpy.TargetModel then
+				rSpy.AttachLocalCamera(character)
+			end
+
 			if desiredWalkSpeed and humanoid then
 				SetWalkSpeed(desiredWalkSpeed)
 			end
@@ -2067,6 +3285,16 @@ local function Unload(skipUIDestroy)
 	clickTeleportEnabled = false
 	antiAFKEnabled = false
 	crosshairEnabled = false
+	rSpy.Enabled = false
+
+	if rSpy.CameraBound then
+		pcall(function()
+			RunService:UnbindFromRenderStep(rSpy.RenderStepName)
+		end)
+		rSpy.CameraBound = false
+	end
+
+	rSpy.RestoreCamera(false)
 
 	SetFullbright(false)
 	SetTerrainGrassDisabled(false)
@@ -2201,7 +3429,7 @@ local function BuildInterface()
 			aimbotSettings.Smoothness = math.clamp(tonumber(newValue) or aimbotSettings.Smoothness, 1, 100)
 			aimbotSettings.MouseRemainder = Vector2.zero
 		end)
-		:setTooltip("Percentage response. 55 is balanced; lower is smoother and higher is faster.")
+		:setTooltip("Frame-rate independent response. 55 is balanced; lower is smoother and higher is faster.")
 
 	aimbotSection
 		:addSlider({
@@ -2371,7 +3599,7 @@ local function BuildInterface()
 	espSection
 		:addToggle({
 			text = "Bones",
-			state = true,
+			state = false,
 		})
 		:bindToEvent("onToggle", function(newState)
 			espBonesEnabled = newState
@@ -2495,6 +3723,48 @@ local function BuildInterface()
 			radar.Update()
 		end)
 		:setTooltip("Maximum radar distance in studs.")
+
+	radarSection
+		:addSlider({
+			text = "Radar Size",
+			min = 140,
+			max = 260,
+			step = 10,
+			value = radar.Size,
+		}, function(newValue)
+			radar.SetSize(newValue)
+		end)
+		:setTooltip("Changes the radar size while keeping it inside the screen.")
+
+	radarSection:addButton({
+		text = "Reset Radar Position",
+		style = "small",
+	}, function()
+		radar.ResetPosition()
+	end)
+
+	local rSpySection = visualsMenu:addSection({
+		text = "RSpy",
+		side = "left",
+		showMinButton = false,
+	})
+
+	rSpySection
+		:addToggle({
+			text = "RSpy",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			rSpy.SetEnabled(newState)
+		end)
+		:setTooltip("Enable ESP, then left-click a highlighted target. Character names do not need to be unique.")
+
+	rSpySection:addButton({
+		text = "Stop Watching",
+		style = "small",
+	}, function()
+		rSpy.RestoreCamera(true)
+	end)
 
 	local lightingSection = visualsMenu:addSection({
 		text = "Lighting",
@@ -2674,6 +3944,24 @@ BuildInterface()
 
 -- Runtime --------------------------------------------------------------------
 
+pcall(function()
+	RunService:UnbindFromRenderStep(rSpy.RenderStepName)
+	RunService:BindToRenderStep(rSpy.RenderStepName, Enum.RenderPriority.Camera.Value + 10, function()
+		if isUnloaded then
+			return
+		end
+
+		if rSpy.TargetModel then
+			rSpy.ApplyCamera()
+		elseif rSpy.RestoreFrames > 0 then
+			if rSpy.AttachLocalCamera() then
+				rSpy.RestoreFrames -= 1
+			end
+		end
+	end)
+	rSpy.CameraBound = true
+end)
+
 RegisterExistingTargets()
 
 for _, player in ipairs(Players:GetPlayers()) do
@@ -2696,6 +3984,10 @@ TrackConnection(Players.PlayerRemoving:Connect(function(player)
 	end
 
 	if player.Character then
+		if rSpy.TargetModel == player.Character then
+			rSpy.RestoreCamera(true)
+		end
+
 		RemoveESP(player.Character)
 		radar.RemoveDot(player.Character)
 		targetModels[player.Character] = nil
@@ -2737,6 +4029,10 @@ TrackConnection(Workspace.DescendantRemoving:Connect(function(instance)
 			aimbotSettings.MouseRemainder = Vector2.zero
 		end
 
+		if rSpy.TargetModel == model then
+			rSpy.RestoreCamera(true)
+		end
+
 		RemoveESP(model)
 		radar.RemoveDot(model)
 		targetModels[model] = nil
@@ -2748,6 +4044,24 @@ TrackConnection(Lighting.ChildAdded:Connect(function(instance)
 		DisableLightingEffect(instance)
 	end
 end))
+
+TrackConnection(radar.Frame.InputBegan:Connect(function(input)
+	radar.BeginDrag(input)
+end))
+
+TrackConnection(radar.Frame.InputEnded:Connect(function(input)
+	radar.EndDrag(input)
+end))
+
+TrackConnection(UserInputService.InputChanged:Connect(function(input)
+	radar.UpdateDrag(input)
+end))
+
+pcall(function()
+	TrackConnection(localPlayer:GetMouse().Button1Down:Connect(function()
+		rSpy.HandleClick("mouse.button1down")
+	end))
+end)
 
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 	if UserInputService:GetFocusedTextBox() then
@@ -2767,6 +4081,12 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
 		return
 	end
 
+	if rSpy.Enabled and espEnabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if rSpy.HandleClick("inputbegan") then
+			return
+		end
+	end
+
 	if IsWallCheckHotkey(input) then
 		ToggleWallCheckFromHotkey()
 	end
@@ -2777,6 +4097,8 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
 end))
 
 TrackConnection(UserInputService.InputEnded:Connect(function(input)
+	radar.EndDrag(input)
+
 	if IsAimbotBind(input) then
 		aimbotBindHeld = false
 		aimbotSettings.LockedModel = nil
@@ -2813,9 +4135,17 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 		return
 	end
 
+	local rSpyMouseDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+
+	if rSpyMouseDown and not rSpy.MouseWasDown then
+		rSpy.HandleClick("renderstep")
+	end
+
+	rSpy.MouseWasDown = rSpyMouseDown
 	UpdateAimbotFOVCircle()
 	UpdateCrosshair()
 	MaintainFullbright()
+	rSpy.Update()
 
 	camera = Workspace.CurrentCamera
 
@@ -2840,10 +4170,10 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	end
 
 	if aimbotEnabled and aimbotBindHeld then
-		local targetHead = GetLockedAimbotTarget()
+		local targetHead, _, aimPosition = GetLockedAimbotTarget()
 
 		if targetHead then
-			AimAtHead(targetHead)
+			AimAtHead(targetHead, aimPosition, deltaTime)
 		end
 	else
 		aimbotSettings.LockedModel = nil
@@ -2853,13 +4183,13 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	UpdateTriggerbot()
 
 	if espEnabled or radar.Enabled then
-		espUpdateAccumulator += deltaTime
+		visualSettings.UpdateAccumulator += deltaTime
 
-		if espUpdateAccumulator >= ESP_UPDATE_INTERVAL then
-			espUpdateAccumulator %= ESP_UPDATE_INTERVAL
+		if visualSettings.UpdateAccumulator >= visualSettings.UpdateInterval then
+			visualSettings.UpdateAccumulator %= visualSettings.UpdateInterval
 
 			if espEnabled then
-				RefreshESP()
+				UpdateESPVisuals()
 			end
 
 			if radar.Enabled then
@@ -2867,7 +4197,18 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 			end
 		end
 	else
-		espUpdateAccumulator = 0
+		visualSettings.UpdateAccumulator = 0
+	end
+
+	if espEnabled then
+		visualSettings.RefreshAccumulator += deltaTime
+
+		if visualSettings.RefreshAccumulator >= visualSettings.RefreshInterval then
+			visualSettings.RefreshAccumulator %= visualSettings.RefreshInterval
+			RefreshESP()
+		end
+	else
+		visualSettings.RefreshAccumulator = 0
 	end
 end))
 
