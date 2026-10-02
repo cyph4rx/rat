@@ -355,6 +355,26 @@ end]=],
 		1
 	)
 	uiSource = ReplaceLiteral(uiSource, "syn.crypt.base64.decode", "__ratBase64Decode", 2)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"                                Text = tostring(value);",
+		"                                Text = (list.multi and (table.find(list.selected, value) and '[x] ' or '[ ] ') or '') .. tostring(value);",
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"                                        valueObj.background.Transparency = (typeof(newSelected) == 'table' and table.find(newSelected, val) or newSelected == val) and 1 or 0",
+		[=[                                        local isSelected = typeof(newSelected) == 'table' and table.find(newSelected, val) or newSelected == val
+										valueObj.background.Transparency = isSelected and 1 or 0
+										valueObj.text.Text = (currentList.multi and (isSelected and '[x] ' or '[ ] ') or '') .. tostring(val)]=],
+		1
+	)
+	uiSource = ReplaceLiteral(
+		uiSource,
+		"                            obj.text.Text = valueStr;",
+		"                            obj.text.Text = (list.multi and (table.find(list.selected, valueStr) and '[x] ' or '[ ] ') or '') .. tostring(valueStr);",
+		1
+	)
 	uiSource = compatibilityPrelude .. "\n" .. uiSource
 
 	local uiLoader, uiLoadError = loadstring(uiSource)
@@ -485,6 +505,21 @@ end]=],
 				increment = tonumber(data.step) or 1,
 				value = tonumber(data.value) or tonumber(data.min) or 0,
 				flag = ui:NextFlag("slider"),
+				callback = function(value)
+					control:emit("onChange", value)
+				end,
+			})
+			return control
+		end
+
+		function section:addDropdown(data)
+			local control = ui:CreateControl()
+			control.native = self.native:AddList({
+				text = tostring(data.text or "Dropdown"),
+				values = data.values or {},
+				selected = data.selected,
+				multi = data.multi == true,
+				flag = ui:NextFlag("list"),
 				callback = function(value)
 					control:emit("onChange", value)
 				end,
@@ -661,7 +696,18 @@ local aimbotSettings = {
 	Smoothness = 55,
 	FOVRadius = 150,
 	LockFOVMultiplier = 1.2,
-	AimPart = "Head",
+	AimParts = { Head = true },
+	AimPartOptions = { "Head", "Upper Torso", "Lower Torso", "Humanoid Root", "Left Arm", "Right Arm", "Left Leg", "Right Leg" },
+	AimPartMap = {
+		Head = { "Head" },
+		["Upper Torso"] = { "UpperTorso", "Torso" },
+		["Lower Torso"] = { "LowerTorso", "Torso" },
+		["Humanoid Root"] = { "HumanoidRootPart" },
+		["Left Arm"] = { "LeftUpperArm", "LeftLowerArm", "LeftHand", "Left Arm" },
+		["Right Arm"] = { "RightUpperArm", "RightLowerArm", "RightHand", "Right Arm" },
+		["Left Leg"] = { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "Left Leg" },
+		["Right Leg"] = { "RightUpperLeg", "RightLowerLeg", "RightFoot", "Right Leg" },
+	},
 	TargetPriority = "Cursor",
 	PredictionEnabled = false,
 	PredictionTime = 0.12,
@@ -680,6 +726,8 @@ local visualSettings = {
 	VeryFarDistance = 1500,
 	FarUpdateInterval = 0.1,
 	VeryFarUpdateInterval = 0.2,
+	FarBoneUpdateInterval = 1 / 45,
+	VeryFarBoneUpdateInterval = 1 / 30,
 	UpdateAccumulator = 0,
 	RefreshAccumulator = 0,
 }
@@ -1412,6 +1460,13 @@ local function GetDrawing(model)
 	espDrawings[model] = {
 		container = container,
 		lastUpdate = 0,
+		boneAccumulator = 0,
+		boneCacheComplete = false,
+		bonePairCount = 0,
+		boneRig = nil,
+		boneSegments = {},
+		boneScreenPoints = {},
+		nextBoneCacheRefresh = 0,
 		tracer = MakeLine(container, "Tracer"),
 		box = {
 			MakeLine(container, "BoxTop"),
@@ -1483,6 +1538,14 @@ local r6BonePairs = {
 	{ "Torso", "Right Leg" },
 }
 
+local function HideBones(drawing)
+	for _, line in pairs(drawing.bones) do
+		if line.Visible then
+			line.Visible = false
+		end
+	end
+end
+
 local function HideDrawing(drawing)
 	drawing.tracer.Visible = false
 	drawing.healthBackground.Visible = false
@@ -1492,8 +1555,94 @@ local function HideDrawing(drawing)
 		line.Visible = false
 	end
 
-	for _, line in pairs(drawing.bones) do
-		line.Visible = false
+	HideBones(drawing)
+end
+
+local function RefreshBoneCache(model, drawing, now)
+	local isR15 = model:FindFirstChild("UpperTorso") ~= nil
+	local activeBonePairs = isR15 and r15BonePairs or r6BonePairs
+	local boneSegments = drawing.boneSegments
+	local cacheComplete = true
+
+	table.clear(boneSegments)
+
+	for index, pair in ipairs(activeBonePairs) do
+		local firstPart = model:FindFirstChild(pair[1])
+		local secondPart = model:FindFirstChild(pair[2])
+
+		if firstPart and firstPart:IsA("BasePart") and secondPart and secondPart:IsA("BasePart") then
+			boneSegments[index] = { firstPart, secondPart }
+		else
+			boneSegments[index] = false
+			cacheComplete = false
+		end
+
+		if not drawing.bones[index] then
+			drawing.bones[index] = MakeLine(drawing.container, "Bone" .. index)
+		end
+	end
+
+	for index = #activeBonePairs + 1, #drawing.bones do
+		drawing.bones[index].Visible = false
+	end
+
+	drawing.boneRig = isR15 and "R15" or "R6"
+	drawing.bonePairCount = #activeBonePairs
+	drawing.boneCacheComplete = cacheComplete
+	drawing.nextBoneCacheRefresh = cacheComplete and math.huge or now + 0.5
+end
+
+local function GetCachedBoneScreenPoint(screenPoints, part)
+	local cachedPoint = screenPoints[part]
+
+	if cachedPoint ~= nil then
+		return cachedPoint or nil
+	end
+
+	if not camera or not part or part.Parent == nil then
+		return nil
+	end
+
+	local position, onScreen = camera:WorldToViewportPoint(part.Position)
+	cachedPoint = onScreen and position.Z > 0 and Vector2.new(position.X, position.Y) or false
+	screenPoints[part] = cachedPoint
+	return cachedPoint or nil
+end
+
+local function UpdateESPSkeleton(model, drawing, now)
+	local rig = model:FindFirstChild("UpperTorso") and "R15" or "R6"
+
+	if drawing.boneRig ~= rig or (not drawing.boneCacheComplete and now >= drawing.nextBoneCacheRefresh) then
+		RefreshBoneCache(model, drawing, now)
+	end
+
+	local screenPoints = drawing.boneScreenPoints
+	local color = drawing.color or GetESPColor(model)
+	local cacheBecameStale = false
+	table.clear(screenPoints)
+
+	for index = 1, drawing.bonePairCount do
+		local segment = drawing.boneSegments[index]
+		local line = drawing.bones[index]
+
+		if segment and segment[1].Parent == model and segment[2].Parent == model then
+			local firstPoint = GetCachedBoneScreenPoint(screenPoints, segment[1])
+			local secondPoint = GetCachedBoneScreenPoint(screenPoints, segment[2])
+
+			if firstPoint and secondPoint then
+				DrawLine(line, firstPoint, secondPoint, color, 2)
+			else
+				line.Visible = false
+			end
+		else
+			line.Visible = false
+			cacheBecameStale = true
+		end
+	end
+
+	if cacheBecameStale then
+		drawing.boneCacheComplete = false
+		drawing.nextBoneCacheRefresh = math.min(drawing.nextBoneCacheRefresh, now + 0.5)
 	end
 end
 
@@ -1509,6 +1658,7 @@ local function UpdateESPDrawings(model)
 	end
 
 	local color = GetESPColor(model)
+	drawing.color = color
 	local boxCFrame, boxSize = model:GetBoundingBox()
 	local minimum = Vector2.new(math.huge, math.huge)
 	local maximum = Vector2.new(-math.huge, -math.huge)
@@ -1574,34 +1724,6 @@ local function UpdateESPDrawings(model)
 		drawing.tracer.Visible = false
 	end
 
-	if not espBonesEnabled then
-		for _, line in pairs(drawing.bones) do
-			line.Visible = false
-		end
-
-		return
-	end
-
-	local activeBonePairs = model:FindFirstChild("UpperTorso") and r15BonePairs or r6BonePairs
-
-	for index, pair in ipairs(activeBonePairs) do
-		local firstPoint = GetScreenPoint(model:FindFirstChild(pair[1]))
-		local secondPoint = GetScreenPoint(model:FindFirstChild(pair[2]))
-
-		if not drawing.bones[index] then
-			drawing.bones[index] = MakeLine(drawing.container, "Bone" .. index)
-		end
-
-		if firstPoint and secondPoint then
-			DrawLine(drawing.bones[index], firstPoint, secondPoint, color, 2)
-		else
-			drawing.bones[index].Visible = false
-		end
-	end
-
-	for index = #activeBonePairs + 1, #drawing.bones do
-		drawing.bones[index].Visible = false
-	end
 end
 
 IsWithinESPDistance = function(model)
@@ -1776,6 +1898,42 @@ local function UpdateESPVisuals()
 			end
 		elseif espDrawings[model] then
 			HideDrawing(espDrawings[model])
+		end
+	end
+end
+
+local function UpdateESPSkeletons(deltaTime)
+	if not espBonesEnabled then
+		return
+	end
+
+	local localRoot = GetLocalRoot()
+	local now = os.clock()
+
+	for model, drawing in pairs(espDrawings) do
+		if IsTargetModel(model) and IsWithinESPDistance(model) then
+			local _, _, root = GetCharacterParts(model)
+			local updateInterval = 0
+
+			if localRoot and root then
+				local distance = (localRoot.Position - root.Position).Magnitude
+
+				if distance >= visualSettings.VeryFarDistance then
+					updateInterval = visualSettings.VeryFarBoneUpdateInterval
+				elseif distance >= visualSettings.FarDistance then
+					updateInterval = visualSettings.FarBoneUpdateInterval
+				end
+			end
+
+			drawing.boneAccumulator += deltaTime
+
+			if updateInterval == 0 or drawing.boneAccumulator >= updateInterval then
+				drawing.boneAccumulator = updateInterval > 0 and drawing.boneAccumulator % updateInterval or 0
+				UpdateESPSkeleton(model, drawing, now)
+			end
+		else
+			drawing.boneAccumulator = 0
+			HideBones(drawing)
 		end
 	end
 end
@@ -2313,17 +2471,17 @@ local function ClearAimbotExclusions()
 	Notify("Aimbot Exclusions", "Excluded: none")
 end
 
-function aimbotSettings.SetAimPartFromText(text)
-	local modes = { head = "Head", torso = "Torso", root = "Root", closest = "Closest" }
-	local mode = modes[NormalizeName(text)]
-	if not mode then
-		Notify("Invalid Aim Part", "Use Head, Torso, Root, or Closest")
-		return false
+function aimbotSettings.SetAimParts(selected)
+	table.clear(aimbotSettings.AimParts)
+	selected = typeof(selected) == "table" and selected or { selected }
+
+	for _, name in ipairs(selected) do
+		if table.find(aimbotSettings.AimPartOptions, name) then
+			aimbotSettings.AimParts[name] = true
+		end
 	end
 
-	aimbotSettings.AimPart = mode
 	aimbotSettings.LockedModel = nil
-	return true
 end
 
 function aimbotSettings.SetTargetPriorityFromText(text)
@@ -2626,19 +2784,21 @@ function aimbotSettings.IsEligibleCombatTarget(model)
 end
 
 function aimbotSettings.GetConfiguredAimParts(model)
-	local _, head, root = GetCharacterParts(model)
-	local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or root
-	local mode = aimbotSettings.AimPart
+	local parts, seen = {}, {}
 
-	if mode == "Closest" then
-		return { head, torso, root }
-	elseif mode == "Torso" then
-		return { torso }
-	elseif mode == "Root" then
-		return { root }
+	for _, group in ipairs(aimbotSettings.AimPartOptions) do
+		if aimbotSettings.AimParts[group] then
+			for _, partName in ipairs(aimbotSettings.AimPartMap[group]) do
+				local part = model:FindFirstChild(partName)
+				if part and part:IsA("BasePart") and not seen[part] then
+					seen[part] = true
+					table.insert(parts, part)
+				end
+			end
+		end
 	end
 
-	return { head }
+	return parts
 end
 
 function aimbotSettings.GetPredictedAimPosition(part, position)
@@ -3304,12 +3464,14 @@ local function BuildInterface()
 	})
 
 	aimTuningSection
-		:addTextbox({
-			text = "Aim Part",
-			value = aimbotSettings.AimPart,
+		:addDropdown({
+			text = "Aim Parts",
+			values = aimbotSettings.AimPartOptions,
+			selected = { "Head" },
+			multi = true,
 		})
-		:bindToEvent("onFocusLost", aimbotSettings.SetAimPartFromText)
-		:setTooltip("Head, Torso, Root, or Closest. Closest chooses the nearest visible body point.")
+		:bindToEvent("onChange", aimbotSettings.SetAimParts)
+		:setTooltip("Open the dropdown and check every body-part group the aimbot may target.")
 
 	aimTuningSection
 		:addTextbox({
@@ -3831,6 +3993,13 @@ local function BuildInterface()
 	})
 
 	interfaceSection:addButton({
+		text = "Minimize GUI",
+		style = "small",
+	}, function()
+		ui.native:SetOpen(false)
+	end)
+
+	interfaceSection:addButton({
 		text = "Unload",
 		style = "large",
 	}, Unload)
@@ -4084,6 +4253,10 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	aimbotSettings.UpdateTargetHud()
 
 	UpdateTriggerbot()
+
+	if espEnabled then
+		UpdateESPSkeletons(deltaTime)
+	end
 
 	if espEnabled or radar.Enabled then
 		visualSettings.UpdateAccumulator += deltaTime
