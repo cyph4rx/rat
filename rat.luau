@@ -43,6 +43,11 @@ local ESP_HIGHLIGHT_NAME = "RatESPHighlight"
 local ESP_INFO_NAME = "RatESPInfo"
 local ENVIRONMENT_UPDATE_INTERVAL = 0.25
 local DEFAULT_FOV = 70
+local config = {
+	Path = "rat_config.json",
+	CacheKey = "__RAT_LUA_CONFIG",
+	Http = game:GetService("HttpService"),
+}
 
 local ui = nil
 
@@ -643,6 +648,8 @@ local flyEnabled = false
 local clickTeleportEnabled = false
 local antiAFKEnabled = false
 local crosshairEnabled = false
+local respectAdsFov = true
+local adsHeld = false
 local aimbotBindHeld = false
 local aimbotBindType = Enum.UserInputType.MouseButton2
 local aimbotBindKey = nil
@@ -654,6 +661,12 @@ local aimbotSettings = {
 	Smoothness = 55,
 	FOVRadius = 150,
 	LockFOVMultiplier = 1.2,
+	AimPart = "Head",
+	TargetPriority = "Cursor",
+	PredictionEnabled = false,
+	PredictionTime = 0.12,
+	StickyTarget = true,
+	TargetHudEnabled = true,
 	MouseDeadzone = 0.35,
 	MouseMaxStep = 180,
 	MouseRemainder = Vector2.zero,
@@ -670,20 +683,6 @@ local visualSettings = {
 	UpdateAccumulator = 0,
 	RefreshAccumulator = 0,
 }
-local rSpy = {
-	Enabled = false,
-	TargetModel = nil,
-	TargetRoot = nil,
-	RestoreToken = 0,
-	EnabledAt = 0,
-	LastClickAt = 0,
-	MouseWasDown = false,
-	RestoreFrames = 0,
-	CameraHeight = 5,
-	CameraDistance = 12,
-	RenderStepName = "RatRSpyCamera",
-	CameraBound = false,
-}
 local radar = {
 	Enabled = false,
 	Range = 500,
@@ -694,7 +693,15 @@ local radar = {
 	DragStart = Vector2.zero,
 	StartPosition = Vector2.zero,
 }
-local TRIGGERBOT_DELAY = 0.1
+local triggerbotSettings = {
+	HoldBind = false,
+	Delay = 0.1,
+	ReactionDelay = 0.03,
+	WarningShown = false,
+	LastShot = 0,
+	Target = nil,
+	TargetSince = 0,
+}
 local TRACER_DISTANCE = 100
 local ESP_DISTANCE_CAP = 1000
 local ESP_DISTANCE_UNCAPPED = true
@@ -718,11 +725,9 @@ local trackedConnections = {}
 local exclusionsLabel = nil
 local aimbotBindLabel = nil
 local wallCheckToggle = nil
-local PLAYER_FOV = camera and camera.FieldOfView or DEFAULT_FOV
+local playerFov = camera and camera.FieldOfView or DEFAULT_FOV
 local environmentUpdateAccumulator = 0
 local mouseAimbotWarningShown = false
-local triggerbotWarningShown = false
-local lastTriggerbotShot = 0
 local isUnloaded = false
 local wallCheckRaycastParams = RaycastParams.new()
 local groundRaycastParams = RaycastParams.new()
@@ -799,6 +804,28 @@ for index = 1, 4 do
 	line.ZIndex = 102
 	line.Parent = espOverlay
 	crosshairLines[index] = line
+end
+
+aimbotSettings.TargetHud = Instance.new("TextLabel")
+aimbotSettings.TargetHud.Name = "TargetHUD"
+aimbotSettings.TargetHud.AnchorPoint = Vector2.new(0.5, 0)
+aimbotSettings.TargetHud.Position = UDim2.new(0.5, 0, 0.5, 28)
+aimbotSettings.TargetHud.Size = UDim2.fromOffset(320, 22)
+aimbotSettings.TargetHud.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+aimbotSettings.TargetHud.BackgroundTransparency = 0.25
+aimbotSettings.TargetHud.BorderSizePixel = 0
+aimbotSettings.TargetHud.Font = Enum.Font.Code
+aimbotSettings.TargetHud.TextColor3 = Color3.fromRGB(255, 255, 255)
+aimbotSettings.TargetHud.TextSize = 13
+aimbotSettings.TargetHud.TextStrokeTransparency = 0.65
+aimbotSettings.TargetHud.Visible = false
+aimbotSettings.TargetHud.ZIndex = 102
+aimbotSettings.TargetHud.Parent = espOverlay
+
+do
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 4)
+	corner.Parent = aimbotSettings.TargetHud
 end
 
 radar.Frame = Instance.new("Frame")
@@ -916,33 +943,6 @@ radar.Hint.TextSize = 10
 radar.Hint.TextStrokeTransparency = 0.75
 radar.Hint.ZIndex = 106
 radar.Hint.Parent = radar.Frame
-
-rSpy.Label = Instance.new("TextLabel")
-rSpy.Label.Name = "RSpyStatus"
-rSpy.Label.AnchorPoint = Vector2.new(0.5, 0)
-rSpy.Label.Position = UDim2.new(0.5, 0, 0, 16)
-rSpy.Label.Size = UDim2.fromOffset(420, 42)
-rSpy.Label.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-rSpy.Label.BackgroundTransparency = 0.25
-rSpy.Label.BorderSizePixel = 0
-rSpy.Label.Font = Enum.Font.Code
-rSpy.Label.Text = ""
-rSpy.Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-rSpy.Label.TextSize = 14
-rSpy.Label.TextStrokeTransparency = 0.65
-rSpy.Label.Visible = false
-rSpy.Label.ZIndex = 110
-rSpy.Label.Parent = espOverlay
-
-rSpy.LabelCorner = Instance.new("UICorner")
-rSpy.LabelCorner.CornerRadius = UDim.new(0, 4)
-rSpy.LabelCorner.Parent = rSpy.Label
-
-rSpy.LabelStroke = Instance.new("UIStroke")
-rSpy.LabelStroke.Color = Color3.fromRGB(215, 215, 225)
-rSpy.LabelStroke.Transparency = 0.45
-rSpy.LabelStroke.Thickness = 1
-rSpy.LabelStroke.Parent = rSpy.Label
 
 PrintLoad("overlay initialized")
 
@@ -1187,362 +1187,6 @@ end
 
 local IsWithinESPDistance
 
-function rSpy.GetDisplayName(model)
-	local player = Players:GetPlayerFromCharacter(model)
-
-	if player then
-		return player.DisplayName ~= player.Name and (player.DisplayName .. " (@" .. player.Name .. ")")
-			or ("@" .. player.Name)
-	end
-
-	return model and model.Name or "unknown target"
-end
-
-function rSpy.AttachLocalCamera(character)
-	camera = Workspace.CurrentCamera
-	character = character or localPlayer.Character
-
-	if not camera or not character then
-		return false
-	end
-
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	local root = character:FindFirstChild("HumanoidRootPart")
-	local head = character:FindFirstChild("Head")
-	local subject = humanoid or root or head
-
-	if not subject then
-		return false
-	end
-
-	local attached = pcall(function()
-		camera.CameraType = Enum.CameraType.Fixed
-		camera.CameraSubject = subject
-
-		if root then
-			local focusPosition = head and head.Position or (root.Position + Vector3.new(0, 2, 0))
-			local cameraPosition = root.CFrame:PointToWorldSpace(Vector3.new(0, 5, 12))
-			camera.CFrame = CFrame.lookAt(cameraPosition, focusPosition)
-			camera.Focus = CFrame.new(focusPosition)
-		end
-
-		camera.CameraType = Enum.CameraType.Custom
-		camera.CameraSubject = subject
-	end)
-
-	return attached
-end
-
-function rSpy.RestoreCamera(showNotice)
-	local wasWatching = rSpy.TargetModel ~= nil
-	rSpy.RestoreToken += 1
-	local restoreToken = rSpy.RestoreToken
-	rSpy.TargetModel = nil
-	rSpy.TargetRoot = nil
-	rSpy.RestoreFrames = isUnloaded and 0 or 30
-	rSpy.Label.Visible = false
-	rSpy.Label.Text = ""
-	local attached = rSpy.AttachLocalCamera()
-
-	if not attached and not isUnloaded then
-		task.spawn(function()
-			for _ = 1, 50 do
-				if isUnloaded or rSpy.TargetModel or rSpy.RestoreToken ~= restoreToken then
-					return
-				end
-
-				if rSpy.AttachLocalCamera() then
-					return
-				end
-
-				task.wait(0.1)
-			end
-		end)
-	end
-
-	if showNotice and wasWatching then
-		Notify("RSpy", "Camera returned to your character")
-	end
-end
-
-function rSpy.SetEnabled(enabled)
-	rSpy.Enabled = enabled
-	rSpy.EnabledAt = os.clock()
-	rSpy.MouseWasDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-	print(string.format("[rat.lua] [rspy] %s", enabled and "enabled" or "disabled"))
-
-	if not enabled then
-		rSpy.RestoreCamera(true)
-	elseif not espEnabled then
-		Notify("RSpy", "Enable ESP, then left-click a highlighted target")
-	else
-		Notify("RSpy", "Left-click a highlighted target to spectate")
-	end
-end
-
-function rSpy.ApplyCamera()
-	local model = rSpy.TargetModel
-
-	if not rSpy.Enabled or not model or not model.Parent then
-		return false
-	end
-
-	local humanoid, head, root = GetCharacterParts(model)
-	camera = Workspace.CurrentCamera
-
-	if not humanoid or not root or not camera then
-		return false
-	end
-
-	rSpy.TargetRoot = root
-	local focusPosition = head and head.Position or (root.Position + Vector3.new(0, 2, 0))
-	local cameraPosition = root.CFrame:PointToWorldSpace(Vector3.new(0, rSpy.CameraHeight, rSpy.CameraDistance))
-
-	return pcall(function()
-		camera.CameraType = Enum.CameraType.Scriptable
-		camera.CameraSubject = humanoid
-		camera.CFrame = CFrame.lookAt(cameraPosition, focusPosition)
-		camera.Focus = CFrame.new(focusPosition)
-	end)
-end
-
-function rSpy.SetTarget(model)
-	if
-		not rSpy.Enabled
-		or not espEnabled
-		or not model
-		or not targetModels[model]
-		or not IsTargetModel(model)
-		or not IsWithinESPDistance(model)
-	then
-		return false
-	end
-
-	local humanoid, _, root = GetCharacterParts(model)
-
-	if not humanoid or not root or not Workspace.CurrentCamera then
-		return false
-	end
-
-	rSpy.RestoreToken += 1
-	rSpy.TargetModel = model
-	rSpy.TargetRoot = root
-	rSpy.RestoreFrames = 0
-
-	if not rSpy.ApplyCamera() then
-		rSpy.TargetModel = nil
-		rSpy.TargetRoot = nil
-		print("[rat.lua] [rspy] camera attach failed")
-		return false
-	end
-
-	rSpy.Label.Text = "rspy | " .. rSpy.GetDisplayName(model) .. "\nleft-click another target or disable rspy to return"
-	rSpy.Label.Visible = true
-	Notify("RSpy", "Spectating " .. rSpy.GetDisplayName(model))
-	return true
-end
-
-function rSpy.GetTargetAtCursor()
-	if not rSpy.Enabled or not espEnabled then
-		return nil
-	end
-
-	camera = Workspace.CurrentCamera
-
-	if not camera then
-		return nil
-	end
-
-	local rawMousePosition = UserInputService:GetMouseLocation()
-
-	if radar.IsPointInside and radar.IsPointInside(rawMousePosition) then
-		return nil
-	end
-
-	local inset = Vector2.zero
-	pcall(function()
-		inset = GuiService:GetGuiInset()
-	end)
-
-	local cursorPositions = { rawMousePosition, rawMousePosition - inset }
-	local raycastParams = RaycastParams.new()
-	local ignoreList = { camera }
-
-	if localPlayer.Character then
-		table.insert(ignoreList, localPlayer.Character)
-	end
-
-	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-	raycastParams.FilterDescendantsInstances = ignoreList
-	raycastParams.IgnoreWater = true
-
-	local directModel = nil
-
-	pcall(function()
-		directModel = GetCharacterFromPart(localPlayer:GetMouse().Target)
-	end)
-
-	if directModel and targetModels[directModel] and IsWithinESPDistance(directModel) then
-		return directModel, 1
-	end
-
-	for _, cursorPosition in ipairs(cursorPositions) do
-		local ray = camera:ViewportPointToRay(cursorPosition.X, cursorPosition.Y)
-		local result = Workspace:Raycast(ray.Origin, ray.Direction * 100000, raycastParams)
-		directModel = result and GetCharacterFromPart(result.Instance)
-
-		if directModel and targetModels[directModel] and IsWithinESPDistance(directModel) then
-			return directModel, 1
-		end
-	end
-
-	local closestModel = nil
-	local closestDistance = math.huge
-	local candidateCount = 0
-
-	for _, model in ipairs(GetTargets()) do
-		if IsWithinESPDistance(model) then
-			candidateCount += 1
-			local boxCFrame, boxSize = model:GetBoundingBox()
-			local minimum = Vector2.new(math.huge, math.huge)
-			local maximum = Vector2.new(-math.huge, -math.huge)
-			local projectedCorners = 0
-			local selectionDistance = math.huge
-
-			for x = -1, 1, 2 do
-				for y = -1, 1, 2 do
-					for z = -1, 1, 2 do
-						local offset = Vector3.new(boxSize.X * x, boxSize.Y * y, boxSize.Z * z) / 2
-						local point = camera:WorldToViewportPoint(boxCFrame:PointToWorldSpace(offset))
-
-						if point.Z > 0 then
-							minimum = Vector2.new(math.min(minimum.X, point.X), math.min(minimum.Y, point.Y))
-							maximum = Vector2.new(math.max(maximum.X, point.X), math.max(maximum.Y, point.Y))
-							projectedCorners += 1
-						end
-					end
-				end
-			end
-
-			if projectedCorners > 0 then
-				local boxDimensions = maximum - minimum
-				local clickPadding = math.clamp(45 - (math.min(boxDimensions.X, boxDimensions.Y) * 0.35), 14, 45)
-
-				for _, cursorPosition in ipairs(cursorPositions) do
-					local nearestBoxPoint = Vector2.new(
-						math.clamp(cursorPosition.X, minimum.X, maximum.X),
-						math.clamp(cursorPosition.Y, minimum.Y, maximum.Y)
-					)
-					local boxDistance = (cursorPosition - nearestBoxPoint).Magnitude
-
-					if boxDistance <= clickPadding then
-						selectionDistance = math.min(selectionDistance, boxDistance)
-					end
-				end
-			end
-
-			local billboard = model:FindFirstChild(ESP_INFO_NAME)
-			local infoLabel = billboard and billboard:FindFirstChild("Info")
-
-			if infoLabel and infoLabel:IsA("GuiObject") and infoLabel.Visible then
-				local labelPosition = infoLabel.AbsolutePosition
-				local labelSize = infoLabel.AbsoluteSize
-
-				for _, cursorPosition in ipairs(cursorPositions) do
-					local nearestLabelPoint = Vector2.new(
-						math.clamp(cursorPosition.X, labelPosition.X, labelPosition.X + labelSize.X),
-						math.clamp(cursorPosition.Y, labelPosition.Y, labelPosition.Y + labelSize.Y)
-					)
-					local labelDistance = (cursorPosition - nearestLabelPoint).Magnitude
-
-					if labelDistance <= 12 then
-						selectionDistance = math.min(selectionDistance, labelDistance)
-					end
-				end
-			end
-
-			if selectionDistance < closestDistance then
-				closestDistance = selectionDistance
-				closestModel = model
-			end
-		end
-	end
-
-	return closestModel, candidateCount
-end
-
-function rSpy.HandleClick(source)
-	if not rSpy.Enabled or not espEnabled or UserInputService:GetFocusedTextBox() then
-		return false
-	end
-
-	if
-		UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl)
-	then
-		return false
-	end
-
-	local now = os.clock()
-
-	if now - rSpy.EnabledAt < 0.2 or now - rSpy.LastClickAt < 0.12 then
-		return false
-	end
-
-	rSpy.LastClickAt = now
-	local target, candidateCount = rSpy.GetTargetAtCursor()
-
-	if target then
-		print(string.format("[rat.lua] [rspy] click via %s -> %s", source, rSpy.GetDisplayName(target)))
-		return rSpy.SetTarget(target)
-	end
-
-	print(
-		string.format(
-			"[rat.lua] [rspy] click via %s -> no target (%d candidates in esp range)",
-			source,
-			candidateCount or 0
-		)
-	)
-	return false
-end
-
-function rSpy.Update()
-	local model = rSpy.TargetModel
-
-	if not model then
-		return
-	end
-
-	if
-		not rSpy.Enabled
-		or not espEnabled
-		or not targetModels[model]
-		or not IsTargetModel(model)
-		or not IsWithinESPDistance(model)
-	then
-		rSpy.RestoreCamera(true)
-		return
-	end
-
-	local humanoid, _, targetRoot = GetCharacterParts(model)
-
-	if not humanoid or not targetRoot or not Workspace.CurrentCamera then
-		rSpy.RestoreCamera(true)
-		return
-	end
-
-	if not rSpy.CameraBound then
-		rSpy.ApplyCamera()
-	end
-	local localRoot = GetLocalRoot()
-	local distance = targetRoot and localRoot and math.floor((targetRoot.Position - localRoot.Position).Magnitude) or 0
-	rSpy.Label.Text = string.format(
-		"rspy | %s | %d studs\nleft-click another target or disable rspy to return",
-		rSpy.GetDisplayName(model),
-		distance
-	)
-end
-
 function radar.IsPointInside(screenPosition)
 	if not radar.Enabled or not radar.Frame.Visible then
 		return false
@@ -1704,28 +1348,15 @@ function radar.Update()
 				local corner = Instance.new("UICorner")
 				corner.CornerRadius = UDim.new(1, 0)
 				corner.Parent = dot
-
-				local stroke = Instance.new("UIStroke")
-				stroke.Name = "Selected"
-				stroke.Color = Color3.fromRGB(255, 255, 255)
-				stroke.Thickness = 2
-				stroke.Enabled = false
-				stroke.Parent = dot
 				radar.Dots[model] = dot
 			end
 
-			local selected = rSpy.TargetModel == model
-			local stroke = dot:FindFirstChild("Selected")
+			local dotSize = outOfRange and 6 or 8
 			dot.Position = UDim2.fromOffset(center.X + scaledOffset.X, center.Y + scaledOffset.Y)
-			dot.Size =
-				UDim2.fromOffset(selected and 10 or (outOfRange and 6 or 8), selected and 10 or (outOfRange and 6 or 8))
+			dot.Size = UDim2.fromOffset(dotSize, dotSize)
 			dot.BackgroundColor3 = GetESPColor(model)
 			dot.BackgroundTransparency = outOfRange and 0.35 or 0
 			dot.Visible = true
-
-			if stroke and stroke:IsA("UIStroke") then
-				stroke.Enabled = selected
-			end
 
 			activeCount += 1
 			activeModels[model] = true
@@ -2169,7 +1800,6 @@ local function SetESP(enabled)
 			end
 		end
 	else
-		rSpy.RestoreCamera(true)
 		RemoveAllESP()
 	end
 end
@@ -2355,16 +1985,13 @@ local function SetWalkSpeed(value)
 	return true
 end
 
-local function SetPlayerFOV(value)
-	PLAYER_FOV = math.clamp(tonumber(value) or PLAYER_FOV, 40, 120)
+local function setPlayerFov(value)
+	playerFov = math.clamp(tonumber(value) or playerFov, 40, 120)
 	camera = Workspace.CurrentCamera
 
-	if camera then
-		if originalCameraFOVs[camera] == nil then
-			originalCameraFOVs[camera] = camera.FieldOfView
-		end
-
-		camera.FieldOfView = PLAYER_FOV
+	if camera and (not respectAdsFov or not adsHeld) then
+		originalCameraFOVs[camera] = originalCameraFOVs[camera] or camera.FieldOfView
+		camera.FieldOfView = playerFov
 	end
 end
 
@@ -2686,6 +2313,32 @@ local function ClearAimbotExclusions()
 	Notify("Aimbot Exclusions", "Excluded: none")
 end
 
+function aimbotSettings.SetAimPartFromText(text)
+	local modes = { head = "Head", torso = "Torso", root = "Root", closest = "Closest" }
+	local mode = modes[NormalizeName(text)]
+	if not mode then
+		Notify("Invalid Aim Part", "Use Head, Torso, Root, or Closest")
+		return false
+	end
+
+	aimbotSettings.AimPart = mode
+	aimbotSettings.LockedModel = nil
+	return true
+end
+
+function aimbotSettings.SetTargetPriorityFromText(text)
+	local modes = { cursor = "Cursor", distance = "Distance", health = "Health" }
+	local mode = modes[NormalizeName(text)]
+	if not mode then
+		Notify("Invalid Priority", "Use Cursor, Distance, or Health")
+		return false
+	end
+
+	aimbotSettings.TargetPriority = mode
+	aimbotSettings.LockedModel = nil
+	return true
+end
+
 local function IsAimbotExcluded(model)
 	local player = Players:GetPlayerFromCharacter(model)
 
@@ -2889,6 +2542,30 @@ local function UpdateAimbotFOVCircle()
 	aimbotFOVCircle.Position = UDim2.fromOffset(aimOrigin.X, aimOrigin.Y)
 	aimbotFOVCircle.Size = UDim2.fromOffset(diameter, diameter)
 	aimbotFOVCircle.Visible = aimbotEnabled
+	aimbotFOVStroke.Color = aimbotSettings.LockedModel and Color3.fromRGB(80, 255, 120) or Color3.fromRGB(255, 255, 255)
+end
+
+function aimbotSettings.UpdateTargetHud()
+	local model = aimbotSettings.LockedModel
+	local humanoid = model and model:FindFirstChildOfClass("Humanoid")
+	local targetRoot = nil
+	if model then
+		local _, _, root = GetCharacterParts(model)
+		targetRoot = root
+	end
+	local localRoot = GetLocalRoot()
+
+	if not aimbotSettings.TargetHudEnabled or not aimbotBindHeld or not humanoid or humanoid.Health <= 0 or not targetRoot then
+		aimbotSettings.TargetHud.Visible = false
+		return
+	end
+
+	local player = Players:GetPlayerFromCharacter(model)
+	local name = player and player.DisplayName or model.Name
+	local distance = localRoot and math.floor((targetRoot.Position - localRoot.Position).Magnitude) or 0
+	aimbotSettings.TargetHud.Text = string.format("%s | %d/%d hp | %d studs", name, math.ceil(humanoid.Health), math.ceil(humanoid.MaxHealth), distance)
+	aimbotSettings.TargetHud.TextColor3 = Color3.fromHSV(math.clamp(humanoid.Health / math.max(humanoid.MaxHealth, 1), 0, 1) * 0.33, 0.8, 1)
+	aimbotSettings.TargetHud.Visible = true
 end
 
 local function UpdateCrosshair()
@@ -2941,47 +2618,92 @@ local function IsSameTeam(model)
 	return player ~= nil and player.Team == localPlayer.Team
 end
 
+function aimbotSettings.IsEligibleCombatTarget(model)
+	return IsTargetModel(model)
+		and IsWithinESPDistance(model)
+		and not IsAimbotExcluded(model)
+		and not IsSameTeam(model)
+end
+
+function aimbotSettings.GetConfiguredAimParts(model)
+	local _, head, root = GetCharacterParts(model)
+	local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso") or root
+	local mode = aimbotSettings.AimPart
+
+	if mode == "Closest" then
+		return { head, torso, root }
+	elseif mode == "Torso" then
+		return { torso }
+	elseif mode == "Root" then
+		return { root }
+	end
+
+	return { head }
+end
+
+function aimbotSettings.GetPredictedAimPosition(part, position)
+	if not aimbotSettings.PredictionEnabled then
+		return position
+	end
+
+	local velocity = part.AssemblyLinearVelocity
+	if velocity.Magnitude > 250 then
+		velocity = velocity.Unit * 250
+	end
+
+	return position + (velocity * aimbotSettings.PredictionTime)
+end
+
 local function GetAimbotTargetPoint(model)
-	if not IsTargetModel(model) then
+	if not aimbotSettings.IsEligibleCombatTarget(model) then
 		return nil, nil
 	end
 
-	if not IsWithinESPDistance(model) then
-		return nil, nil
+	camera = Workspace.CurrentCamera
+	local aimOrigin = GetAimbotScreenOrigin()
+	local bestPart, bestPosition, bestDistance = nil, nil, math.huge
+
+	for _, part in ipairs(aimbotSettings.GetConfiguredAimParts(model)) do
+		if part and part:IsA("BasePart") then
+			local visible, position = true, part.Position
+
+			if wallCheckEnabled then
+				visible, position = HasWallCheck(model, part)
+			end
+
+			if visible then
+				position = aimbotSettings.GetPredictedAimPosition(part, position or part.Position)
+				local point, onScreen = nil, false
+				if camera then
+					point, onScreen = camera:WorldToViewportPoint(position)
+				end
+				local distance = onScreen and aimOrigin and (Vector2.new(point.X, point.Y) - aimOrigin).Magnitude or math.huge
+
+				if distance < bestDistance then
+					bestPart, bestPosition, bestDistance = part, position, distance
+				end
+			end
+		end
 	end
 
-	if IsAimbotExcluded(model) then
-		return nil, nil
-	end
-
-	if IsSameTeam(model) then
-		return nil, nil
-	end
-
-	local _, head = GetCharacterParts(model)
-
-	if not head then
-		return nil, nil
-	end
-
-	if not wallCheckEnabled then
-		return head, head.Position
-	end
-
-	local visible, visiblePoint = HasWallCheck(model, head)
-
-	if not visible then
-		return nil, nil
-	end
-
-	return head, visiblePoint or head.Position
+	return bestPart, bestPosition
 end
 
-local function IsValidAimbotTarget(model)
-	return GetAimbotTargetPoint(model) ~= nil
+function aimbotSettings.GetTargetPriorityScore(model, screenDistance)
+	if aimbotSettings.TargetPriority == "Distance" then
+		local localRoot = GetLocalRoot()
+		local _, _, targetRoot = GetCharacterParts(model)
+		return localRoot and targetRoot and (targetRoot.Position - localRoot.Position).Magnitude + (screenDistance * 0.001)
+			or math.huge
+	elseif aimbotSettings.TargetPriority == "Health" then
+		local humanoid = model:FindFirstChildOfClass("Humanoid")
+		return humanoid and humanoid.Health + (screenDistance * 0.001) or math.huge
+	end
+
+	return screenDistance
 end
 
-local function GetClosestHeadToCrosshair()
+function aimbotSettings.GetBestTarget()
 	camera = Workspace.CurrentCamera
 
 	if not camera then
@@ -2994,34 +2716,32 @@ local function GetClosestHeadToCrosshair()
 		return nil
 	end
 
-	local closestHead = nil
-	local closestScreenPosition = nil
-	local closestModel = nil
-	local closestAimPosition = nil
-	local closestDistance = math.huge
+	local bestPart, bestScreenPosition, bestModel, bestAimPosition = nil, nil, nil, nil
+	local bestScore = math.huge
 
 	for _, model in ipairs(GetTargets()) do
-		local head, aimPosition = GetAimbotTargetPoint(model)
+		local targetPart, aimPosition = GetAimbotTargetPoint(model)
 
-		if head and aimPosition then
+		if targetPart and aimPosition then
 			local screenPoint, onScreen = camera:WorldToViewportPoint(aimPosition)
 
 			if onScreen and screenPoint.Z > 0 then
 				local screenPosition = Vector2.new(screenPoint.X, screenPoint.Y)
-				local distance = (screenPosition - aimOrigin).Magnitude
+				local screenDistance = (screenPosition - aimOrigin).Magnitude
+				local score = aimbotSettings.GetTargetPriorityScore(model, screenDistance)
 
-				if IsScreenPointInAimbotFOV(screenPosition) and distance < closestDistance then
-					closestDistance = distance
-					closestHead = head
-					closestScreenPosition = screenPosition
-					closestModel = model
-					closestAimPosition = aimPosition
+				if IsScreenPointInAimbotFOV(screenPosition) and score < bestScore then
+					bestScore = score
+					bestPart = targetPart
+					bestScreenPosition = screenPosition
+					bestModel = model
+					bestAimPosition = aimPosition
 				end
 			end
 		end
 	end
 
-	return closestHead, closestScreenPosition, closestModel, closestAimPosition
+	return bestPart, bestScreenPosition, bestModel, bestAimPosition
 end
 
 local function GetLockedAimbotTarget()
@@ -3033,17 +2753,17 @@ local function GetLockedAimbotTarget()
 		return nil
 	end
 
-	if aimbotSettings.LockedModel then
-		local head, aimPosition = GetAimbotTargetPoint(aimbotSettings.LockedModel)
+	if aimbotSettings.StickyTarget and aimbotSettings.LockedModel then
+		local targetPart, aimPosition = GetAimbotTargetPoint(aimbotSettings.LockedModel)
 
-		if head and aimPosition then
+		if targetPart and aimPosition then
 			local point, onScreen = camera:WorldToViewportPoint(aimPosition)
 
 			if onScreen and point.Z > 0 then
 				local screenPosition = Vector2.new(point.X, point.Y)
 
 				if IsScreenPointInAimbotFOV(screenPosition, aimbotSettings.LockFOVMultiplier) then
-					return head, screenPosition, aimPosition
+					return targetPart, screenPosition, aimPosition
 				end
 			end
 		end
@@ -3052,9 +2772,9 @@ local function GetLockedAimbotTarget()
 	aimbotSettings.LockedModel = nil
 	aimbotSettings.MouseRemainder = Vector2.zero
 
-	local head, screenPosition, model, aimPosition = GetClosestHeadToCrosshair()
+	local targetPart, screenPosition, model, aimPosition = aimbotSettings.GetBestTarget()
 	aimbotSettings.LockedModel = model
-	return head, screenPosition, aimPosition
+	return targetPart, screenPosition, aimPosition
 end
 
 local function MoveMouseTowardScreenPosition(screenPosition, deltaTime)
@@ -3078,6 +2798,7 @@ local function MoveMouseTowardScreenPosition(screenPosition, deltaTime)
 	end
 
 	local baseResponse = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	baseResponse = math.clamp(baseResponse + ((rawDelta.Magnitude / math.max(aimbotSettings.FOVRadius, 1)) * 0.18), 0.01, 1)
 	local frameScale = math.clamp((tonumber(deltaTime) or (1 / 60)) * 60, 0.25, 3)
 	local response = 1 - math.pow(1 - baseResponse, frameScale)
 	local delta = (rawDelta * response) + aimbotSettings.MouseRemainder
@@ -3127,14 +2848,14 @@ local function MoveMouseTowardScreenPosition(screenPosition, deltaTime)
 	return false
 end
 
-local function AimAtHead(head, aimPosition, deltaTime)
+local function AimAtTarget(targetPart, aimPosition, deltaTime)
 	camera = Workspace.CurrentCamera
 
-	if not camera or not head or not head:IsDescendantOf(Workspace) then
+	if not camera or not targetPart or not targetPart:IsDescendantOf(Workspace) then
 		return
 	end
 
-	aimPosition = typeof(aimPosition) == "Vector3" and aimPosition or head.Position
+	aimPosition = typeof(aimPosition) == "Vector3" and aimPosition or targetPart.Position
 
 	if mouseAimbotEnabled then
 		local point, onScreen = camera:WorldToViewportPoint(aimPosition)
@@ -3169,6 +2890,9 @@ local function AimAtHead(head, aimPosition, deltaTime)
 	local position = camera.CFrame.Position
 	local targetCFrame = CFrame.lookAt(position, aimPosition)
 	local baseResponse = math.clamp(aimbotSettings.Smoothness / 100, 0.01, 1)
+	local direction = aimPosition - position
+	local angle = direction.Magnitude > 0.001 and math.acos(math.clamp(camera.CFrame.LookVector:Dot(direction.Unit), -1, 1)) or 0
+	baseResponse = math.clamp(baseResponse + ((angle / math.pi) * 0.18), 0.01, 1)
 	local frameScale = math.clamp((tonumber(deltaTime) or (1 / 60)) * 60, 0.25, 3)
 	local response = 1 - math.pow(1 - baseResponse, frameScale)
 	camera.CFrame = camera.CFrame:Lerp(targetCFrame, response)
@@ -3195,19 +2919,20 @@ local function ClickMouseOnce()
 end
 
 local function UpdateTriggerbot()
-	if not triggerbotEnabled or UserInputService:GetFocusedTextBox() then
+	if
+		not triggerbotEnabled
+		or UserInputService:GetFocusedTextBox()
+		or (triggerbotSettings.HoldBind and not aimbotBindHeld)
+	then
+		triggerbotSettings.Target = nil
 		return
 	end
 
 	local now = os.clock()
-
-	if now - lastTriggerbotShot < TRIGGERBOT_DELAY then
-		return
-	end
-
 	camera = Workspace.CurrentCamera
 
 	if not camera then
+		triggerbotSettings.Target = nil
 		return
 	end
 
@@ -3225,14 +2950,25 @@ local function UpdateTriggerbot()
 	local result = Workspace:Raycast(ray.Origin, ray.Direction * 10000, triggerbotRaycastParams)
 	local model = result and GetCharacterFromPart(result.Instance)
 
-	if not model or not IsValidAimbotTarget(model) then
+	if not model or not aimbotSettings.IsEligibleCombatTarget(model) then
+		triggerbotSettings.Target = nil
+		return
+	end
+	if triggerbotSettings.Target ~= model then
+		triggerbotSettings.Target = model
+		triggerbotSettings.TargetSince = now
+	end
+	if
+		now - triggerbotSettings.TargetSince < triggerbotSettings.ReactionDelay
+		or now - triggerbotSettings.LastShot < triggerbotSettings.Delay
+	then
 		return
 	end
 
-	lastTriggerbotShot = now
+	triggerbotSettings.LastShot = now
 
-	if not ClickMouseOnce() and not triggerbotWarningShown then
-		triggerbotWarningShown = true
+	if not ClickMouseOnce() and not triggerbotSettings.WarningShown then
+		triggerbotSettings.WarningShown = true
 		Notify("Triggerbot", "Mouse clicking is not supported in this executor")
 	end
 end
@@ -3250,10 +2986,6 @@ local function WatchPlayer(player)
 			RestoreNoclipCollisions()
 			DestroyFlyMovers()
 
-			if not rSpy.TargetModel then
-				rSpy.AttachLocalCamera(character)
-			end
-
 			if desiredWalkSpeed and humanoid then
 				SetWalkSpeed(desiredWalkSpeed)
 			end
@@ -3269,6 +3001,117 @@ local function WatchPlayer(player)
 	end))
 end
 
+function config.BuildText()
+	local values = {}
+
+	for flag, option in pairs(ui.native.options or {}) do
+		if option.class == "toggle" then
+			values[flag] = option.state and 1 or 0
+		elseif option.class == "slider" then
+			values[flag] = option.value
+		elseif option.class == "box" then
+			values[flag] = option.input
+		elseif option.class == "color" then
+			values[flag] = { option.color.R, option.color.G, option.color.B, option.trans }
+		elseif option.class == "list" then
+			values[flag] = option.selected
+		elseif option.class == "bind" and option.bind then
+			values[flag] = option.bind.Name
+		end
+	end
+
+	return config.Http:JSONEncode({ version = 1, values = values })
+end
+
+function config.ApplyText(text, silent)
+	local decoded
+	local succeeded, configError = pcall(function()
+		decoded = config.Http:JSONDecode(text)
+	end)
+
+	if not succeeded or typeof(decoded) ~= "table" or typeof(decoded.values) ~= "table" then
+		if not silent then
+			Notify("Config", "Invalid config: " .. tostring(configError or "missing values"))
+		end
+		return false
+	end
+
+	local loaded = 0
+	for flag, value in pairs(decoded.values) do
+		local option = ui.native.options and ui.native.options[flag]
+		if option then
+			local applied = pcall(function()
+				if option.class == "toggle" then
+					option:SetState(value == 1 or value == true)
+				elseif option.class == "slider" then
+					option:SetValue(value)
+				elseif option.class == "box" then
+					option:SetInput(value)
+				elseif option.class == "color" then
+					option:SetColor(Color3.new(value[1], value[2], value[3]))
+					option:SetTrans(value[4] == nil and 1 or value[4])
+				elseif option.class == "list" then
+					option:Select(value)
+				end
+			end)
+			loaded += applied and 1 or 0
+		end
+	end
+
+	if not silent then
+		Notify("Config", string.format("Loaded %d settings", loaded))
+	end
+	return true
+end
+
+function config.Save()
+	local text = config.BuildText()
+	if runtimeEnvironment then
+		runtimeEnvironment[config.CacheKey] = text
+	end
+
+	local saved = typeof(writefile) == "function" and pcall(writefile, config.Path, text)
+	if saved then
+		Notify("Config", "Saved to " .. config.Path)
+	elseif typeof(setclipboard) == "function" and pcall(setclipboard, text) then
+		Notify("Config", "File access unavailable; copied config JSON")
+	else
+		Notify("Config", "Saved for this executor session")
+	end
+end
+
+function config.Load(silent)
+	local text = runtimeEnvironment and runtimeEnvironment[config.CacheKey]
+	if typeof(isfile) == "function" and typeof(readfile) == "function" then
+		local exists, hasFile = pcall(isfile, config.Path)
+		if exists and hasFile then
+			local readSucceeded, fileText = pcall(readfile, config.Path)
+			text = readSucceeded and fileText or text
+		end
+	end
+	if (typeof(text) ~= "string" or text == "") and typeof(getclipboard) == "function" then
+		local clipboardSucceeded, clipboardText = pcall(getclipboard)
+		text = clipboardSucceeded and clipboardText or text
+	end
+
+	if typeof(text) ~= "string" or text == "" then
+		if not silent then
+			Notify("Config", "No saved config found")
+		end
+		return false
+	end
+
+	return config.ApplyText(text, silent)
+end
+
+function config.Copy()
+	if typeof(setclipboard) == "function" and pcall(setclipboard, config.BuildText()) then
+		Notify("Config", "Copied config JSON")
+	else
+		Notify("Config", "Clipboard access is unavailable")
+	end
+end
+
 local function Unload(skipUIDestroy)
 	if isUnloaded then
 		return
@@ -3282,19 +3125,11 @@ local function Unload(skipUIDestroy)
 	aimbotSettings.LockedModel = nil
 	aimbotSettings.MouseRemainder = Vector2.zero
 	triggerbotEnabled = false
+	triggerbotSettings.Target = nil
 	clickTeleportEnabled = false
 	antiAFKEnabled = false
 	crosshairEnabled = false
-	rSpy.Enabled = false
-
-	if rSpy.CameraBound then
-		pcall(function()
-			RunService:UnbindFromRenderStep(rSpy.RenderStepName)
-		end)
-		rSpy.CameraBound = false
-	end
-
-	rSpy.RestoreCamera(false)
+	adsHeld = false
 
 	SetFullbright(false)
 	SetTerrainGrassDisabled(false)
@@ -3447,6 +3282,7 @@ local function BuildInterface()
 	aimbotSection
 		:addTextbox({
 			text = "Hold Bind",
+			value = GetBindName(),
 		})
 		:bindToEvent("onFocusLost", function(text)
 			SetAimbotBindFromText(text)
@@ -3455,9 +3291,75 @@ local function BuildInterface()
 	aimbotSection
 		:addTextbox({
 			text = "Wallcheck Hotkey",
+			value = "none",
 		})
 		:bindToEvent("onFocusLost", function(text)
 			SetWallCheckHotkeyFromText(text)
+		end)
+
+	local aimTuningSection = combatMenu:addSection({
+		text = "Aim Tuning",
+		side = "left",
+		showMinButton = false,
+	})
+
+	aimTuningSection
+		:addTextbox({
+			text = "Aim Part",
+			value = aimbotSettings.AimPart,
+		})
+		:bindToEvent("onFocusLost", aimbotSettings.SetAimPartFromText)
+		:setTooltip("Head, Torso, Root, or Closest. Closest chooses the nearest visible body point.")
+
+	aimTuningSection
+		:addTextbox({
+			text = "Target Priority",
+			value = aimbotSettings.TargetPriority,
+		})
+		:bindToEvent("onFocusLost", aimbotSettings.SetTargetPriorityFromText)
+		:setTooltip("Cursor, Distance, or Health.")
+
+	aimTuningSection
+		:addToggle({
+			text = "Sticky Target",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			aimbotSettings.StickyTarget = newState
+			aimbotSettings.LockedModel = nil
+		end)
+
+	aimTuningSection
+		:addToggle({
+			text = "Velocity Prediction",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			aimbotSettings.PredictionEnabled = newState
+		end)
+
+	aimTuningSection
+		:addSlider({
+			text = "Prediction Time",
+			min = 0,
+			max = 0.3,
+			step = 0.01,
+			value = aimbotSettings.PredictionTime,
+		}, function(newValue)
+			aimbotSettings.PredictionTime = math.clamp(tonumber(newValue) or 0.12, 0, 0.3)
+		end)
+		:setTooltip("Leads moving targets by this many seconds.")
+
+	aimTuningSection
+		:addToggle({
+			text = "Target HUD",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			aimbotSettings.TargetHudEnabled = newState
+			if not newState then
+				aimbotSettings.TargetHud.Visible = false
+			end
 		end)
 
 	local exclusionsSection = combatMenu:addSection({
@@ -3499,7 +3401,8 @@ local function BuildInterface()
 		})
 		:bindToEvent("onToggle", function(newState)
 			triggerbotEnabled = newState
-			lastTriggerbotShot = 0
+			triggerbotSettings.LastShot = 0
+			triggerbotSettings.Target = nil
 		end)
 
 	triggerbotSection
@@ -3508,11 +3411,34 @@ local function BuildInterface()
 			min = 0.02,
 			max = 0.5,
 			step = 0.01,
-			value = TRIGGERBOT_DELAY,
+			value = triggerbotSettings.Delay,
 		}, function(newValue)
-			TRIGGERBOT_DELAY = tonumber(newValue) or TRIGGERBOT_DELAY
+			triggerbotSettings.Delay = tonumber(newValue) or triggerbotSettings.Delay
 		end)
 		:setTooltip("Delay between automatic shots while an eligible target is under the crosshair.")
+
+	triggerbotSection
+		:addToggle({
+			text = "Require Aim Bind",
+			state = false,
+		})
+		:bindToEvent("onToggle", function(newState)
+			triggerbotSettings.HoldBind = newState
+			triggerbotSettings.Target = nil
+		end)
+		:setTooltip("Only fires while the configured aimbot hold bind is pressed.")
+
+	triggerbotSection
+		:addSlider({
+			text = "Reaction Delay",
+			min = 0,
+			max = 0.25,
+			step = 0.01,
+			value = triggerbotSettings.ReactionDelay,
+		}, function(newValue)
+			triggerbotSettings.ReactionDelay = math.clamp(tonumber(newValue) or 0.03, 0, 0.25)
+		end)
+		:setTooltip("Waits for the crosshair to remain on the same target before firing.")
 
 	local espSection = visualsMenu:addSection({
 		text = "ESP",
@@ -3743,29 +3669,6 @@ local function BuildInterface()
 		radar.ResetPosition()
 	end)
 
-	local rSpySection = visualsMenu:addSection({
-		text = "RSpy",
-		side = "left",
-		showMinButton = false,
-	})
-
-	rSpySection
-		:addToggle({
-			text = "RSpy",
-			state = false,
-		})
-		:bindToEvent("onToggle", function(newState)
-			rSpy.SetEnabled(newState)
-		end)
-		:setTooltip("Enable ESP, then left-click a highlighted target. Character names do not need to be unique.")
-
-	rSpySection:addButton({
-		text = "Stop Watching",
-		style = "small",
-	}, function()
-		rSpy.RestoreCamera(true)
-	end)
-
 	local lightingSection = visualsMenu:addSection({
 		text = "Lighting",
 		side = "right",
@@ -3849,11 +3752,22 @@ local function BuildInterface()
 			min = 40,
 			max = 120,
 			step = 1,
-			value = PLAYER_FOV,
+			value = playerFov,
 		}, function(newValue)
-			SetPlayerFOV(newValue)
+			setPlayerFov(newValue)
 		end)
 		:setTooltip("Changes your camera field of view.")
+
+	movementSection
+		:addToggle({
+			text = "Respect ADS FOV",
+			state = true,
+		})
+		:bindToEvent("onToggle", function(newState)
+			respectAdsFov = newState
+			setPlayerFov(playerFov)
+		end)
+		:setTooltip("Lets the game control camera zoom while holding right-click to ADS.")
 
 	movementSection
 		:addToggle({
@@ -3921,6 +3835,29 @@ local function BuildInterface()
 		style = "large",
 	}, Unload)
 
+	local configSection = settingsMenu:addSection({
+		text = "Config",
+		side = "left",
+		showMinButton = false,
+	})
+
+	configSection:addButton({
+		text = "Save Config",
+		style = "small",
+	}, config.Save)
+
+	configSection:addButton({
+		text = "Load Config",
+		style = "small",
+	}, function()
+		config.Load(false)
+	end)
+
+	configSection:addButton({
+		text = "Copy Config JSON",
+		style = "small",
+	}, config.Copy)
+
 	local utilitySection = settingsMenu:addSection({
 		text = "Utility",
 		side = "right",
@@ -3941,26 +3878,9 @@ local function BuildInterface()
 end
 
 BuildInterface()
+PrintLoad(config.Load(true) and "saved config loaded" or "no saved config found")
 
 -- Runtime --------------------------------------------------------------------
-
-pcall(function()
-	RunService:UnbindFromRenderStep(rSpy.RenderStepName)
-	RunService:BindToRenderStep(rSpy.RenderStepName, Enum.RenderPriority.Camera.Value + 10, function()
-		if isUnloaded then
-			return
-		end
-
-		if rSpy.TargetModel then
-			rSpy.ApplyCamera()
-		elseif rSpy.RestoreFrames > 0 then
-			if rSpy.AttachLocalCamera() then
-				rSpy.RestoreFrames -= 1
-			end
-		end
-	end)
-	rSpy.CameraBound = true
-end)
 
 RegisterExistingTargets()
 
@@ -3984,10 +3904,9 @@ TrackConnection(Players.PlayerRemoving:Connect(function(player)
 	end
 
 	if player.Character then
-		if rSpy.TargetModel == player.Character then
-			rSpy.RestoreCamera(true)
+		if triggerbotSettings.Target == player.Character then
+			triggerbotSettings.Target = nil
 		end
-
 		RemoveESP(player.Character)
 		radar.RemoveDot(player.Character)
 		targetModels[player.Character] = nil
@@ -4028,9 +3947,8 @@ TrackConnection(Workspace.DescendantRemoving:Connect(function(instance)
 			aimbotSettings.LockedModel = nil
 			aimbotSettings.MouseRemainder = Vector2.zero
 		end
-
-		if rSpy.TargetModel == model then
-			rSpy.RestoreCamera(true)
+		if triggerbotSettings.Target == model then
+			triggerbotSettings.Target = nil
 		end
 
 		RemoveESP(model)
@@ -4057,15 +3975,12 @@ TrackConnection(UserInputService.InputChanged:Connect(function(input)
 	radar.UpdateDrag(input)
 end))
 
-pcall(function()
-	TrackConnection(localPlayer:GetMouse().Button1Down:Connect(function()
-		rSpy.HandleClick("mouse.button1down")
-	end))
-end)
-
 TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
 	if UserInputService:GetFocusedTextBox() then
 		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		adsHeld = true
 	end
 
 	if
@@ -4081,12 +3996,6 @@ TrackConnection(UserInputService.InputBegan:Connect(function(input, gameProcesse
 		return
 	end
 
-	if rSpy.Enabled and espEnabled and input.UserInputType == Enum.UserInputType.MouseButton1 then
-		if rSpy.HandleClick("inputbegan") then
-			return
-		end
-	end
-
 	if IsWallCheckHotkey(input) then
 		ToggleWallCheckFromHotkey()
 	end
@@ -4098,6 +4007,10 @@ end))
 
 TrackConnection(UserInputService.InputEnded:Connect(function(input)
 	radar.EndDrag(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		adsHeld = false
+		setPlayerFov(playerFov)
+	end
 
 	if IsAimbotBind(input) then
 		aimbotBindHeld = false
@@ -4135,27 +4048,16 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 		return
 	end
 
-	local rSpyMouseDown = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-
-	if rSpyMouseDown and not rSpy.MouseWasDown then
-		rSpy.HandleClick("renderstep")
-	end
-
-	rSpy.MouseWasDown = rSpyMouseDown
 	UpdateAimbotFOVCircle()
 	UpdateCrosshair()
 	MaintainFullbright()
-	rSpy.Update()
 
 	camera = Workspace.CurrentCamera
 
-	if camera then
-		if originalCameraFOVs[camera] == nil then
-			originalCameraFOVs[camera] = camera.FieldOfView
-		end
-
-		if camera.FieldOfView ~= PLAYER_FOV then
-			camera.FieldOfView = PLAYER_FOV
+	if camera and (not respectAdsFov or not adsHeld) then
+		originalCameraFOVs[camera] = originalCameraFOVs[camera] or camera.FieldOfView
+		if camera.FieldOfView ~= playerFov then
+			camera.FieldOfView = playerFov
 		end
 	end
 
@@ -4170,15 +4072,16 @@ TrackConnection(RunService.RenderStepped:Connect(function(deltaTime)
 	end
 
 	if aimbotEnabled and aimbotBindHeld then
-		local targetHead, _, aimPosition = GetLockedAimbotTarget()
+		local targetPart, _, aimPosition = GetLockedAimbotTarget()
 
-		if targetHead then
-			AimAtHead(targetHead, aimPosition, deltaTime)
+		if targetPart then
+			AimAtTarget(targetPart, aimPosition, deltaTime)
 		end
 	else
 		aimbotSettings.LockedModel = nil
 		aimbotSettings.MouseRemainder = Vector2.zero
 	end
+	aimbotSettings.UpdateTargetHud()
 
 	UpdateTriggerbot()
 
